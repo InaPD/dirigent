@@ -113,6 +113,9 @@ class RunState(BaseModel):
     report: Report | None = None
     report_markdown: str | None = None
     reviewed: bool = False
+    # Set when a cap trips. The run stays "running" until the writer has had its turn, so a
+    # client polling on status never sees a terminal status with no report behind it.
+    budget_stopped: bool = False
     revisions_used: int = 0
     tokens_in: int = 0
     tokens_out: int = 0

@@ -21,6 +21,8 @@ dev = [
     "pytest-asyncio",
     "pytest-cov",
     "respx",
+    # The Anthropic SDK runs on httpx2; its tests mock that, not httpx.
+    "httpx2",
     "fakeredis[lua]",
     "ruff",
     "pre-commit",

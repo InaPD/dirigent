@@ -1282,6 +1282,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "fakeredis", extra = ["lua"] },
+    { name = "httpx2" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1297,6 +1298,7 @@ requires-dist = [
     { name = "fakeredis", extras = ["lua"], marker = "extra == 'dev'" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "httpx2", marker = "extra == 'dev'" },
     { name = "langgraph" },
     { name = "pre-commit", marker = "extra == 'dev'" },
     { name = "pydantic", specifier = ">=2" },

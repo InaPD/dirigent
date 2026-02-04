@@ -22,9 +22,14 @@ def next_open_subquestion(state: RunState) -> SubQuestion | None:
 
 def route(state: RunState) -> str:
     """Name of the next node, or END."""
-    if state.is_terminal:
-        return END
     if state.report is not None:
+        return END
+    if state.budget_stopped:
+        # A cap tripped. Spend the writer reserve on what we have, or stop if we have nothing.
+        # This is checked before is_terminal because a stopped run with findings deliberately
+        # stays "running" until the writer has had its turn.
+        return "write" if state.findings else END
+    if state.is_terminal:
         return END
     if not state.plan:
         return "plan"

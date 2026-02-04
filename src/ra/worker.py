@@ -13,6 +13,7 @@ from ra.clock import now
 from ra.config import get_settings
 from ra.deps import Deps
 from ra.graph import RECURSION_LIMIT, build_graph
+from ra.llm import LLM
 from ra.schemas import RunState
 from ra.store import RunStore, make_redis
 
@@ -84,6 +85,18 @@ async def run_graph(ctx: dict, run_id: str) -> None:
         await store.release_lease(run_id, worker_id)
 
 
+def build_deps(settings, store: RunStore) -> Deps:
+    """Assemble what the nodes need.
+
+    The model client is only built when a key is configured. Without one the canned nodes
+    still run, which is what keeps the test suite and CI free of credentials.
+    """
+    llm = LLM.from_api_key(settings.require_anthropic_key()) if settings.anthropic_api_key else None
+    if llm is None:
+        log.warning("no ANTHROPIC_API_KEY, model-backed nodes will not run")
+    return Deps(store=store, settings=settings, llm=llm)
+
+
 async def on_startup(ctx: dict) -> None:
     settings = get_settings()
     redis = make_redis(settings.redis_url)
@@ -92,7 +105,7 @@ async def on_startup(ctx: dict) -> None:
     ctx["redis"] = redis
     ctx["store"] = store
     ctx["worker_id"] = settings.worker_id
-    ctx["graph"] = build_graph(Deps(store=store, settings=settings))
+    ctx["graph"] = build_graph(build_deps(settings, store))
     ctx["pool"] = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     log.info("worker %s ready", settings.worker_id)
 

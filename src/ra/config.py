@@ -4,8 +4,10 @@ import os
 import socket
 from functools import lru_cache
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from ra.pricing import price_for
 
 
 class ModelConfig(BaseModel):
@@ -19,6 +21,13 @@ class ModelConfig(BaseModel):
     reviewer: str = "claude-haiku-4-5"
     researcher: str = "claude-sonnet-5"
     writer: str = "claude-sonnet-5"
+
+    @model_validator(mode="after")
+    def _every_model_has_a_price(self) -> "ModelConfig":
+        """Fail here, at startup, rather than halfway through a paid run."""
+        for role in ("planner", "reviewer", "researcher", "writer"):
+            price_for(getattr(self, role))
+        return self
 
 
 def _default_worker_id() -> str:

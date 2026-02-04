@@ -59,3 +59,11 @@ def test_get_settings_is_cached():
     get_settings.cache_clear()
     assert get_settings() is get_settings()
     get_settings.cache_clear()
+
+
+def test_an_explicit_none_beats_a_key_in_the_environment(monkeypatch):
+    """Why the test fixtures pin the keys: otherwise a developer's .env changes results."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-the-environment")
+
+    assert Settings().anthropic_api_key is not None
+    assert Settings(anthropic_api_key=None).anthropic_api_key is None

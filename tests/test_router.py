@@ -5,7 +5,7 @@ from langgraph.graph import END
 
 from ra.routing import next_open_subquestion, route
 from ra.schemas import SubQuestion
-from tests.factories import make_plan, make_report, make_state
+from tests.factories import make_finding, make_plan, make_report, make_state
 
 
 def answered(n: int) -> list[SubQuestion]:
@@ -16,6 +16,17 @@ ROUTER_CASES = [
     ("terminal: done", {"status": "done"}, END),
     ("terminal: failed", {"status": "failed"}, END),
     ("terminal: budget exceeded", {"status": "budget_exceeded"}, END),
+    ("cap tripped with nothing to write", {"budget_stopped": True}, END),
+    (
+        "cap tripped with findings in hand",
+        {"budget_stopped": True, "findings": [make_finding()]},
+        "write",
+    ),
+    (
+        "cap tripped, report already written",
+        {"budget_stopped": True, "findings": [make_finding()], "report": make_report()},
+        END,
+    ),
     ("report already written", {"report": make_report()}, END),
     ("queued, no plan", {"status": "queued"}, "plan"),
     ("running, no plan", {}, "plan"),

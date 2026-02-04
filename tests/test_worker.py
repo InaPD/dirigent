@@ -117,3 +117,19 @@ async def test_the_lease_is_released_even_when_loading_fails(deps, monkeypatch):
         await run_graph(ctx, state.run_id)
 
     assert await store.lease_holder(state.run_id) is None
+
+
+def test_build_deps_skips_the_model_client_without_a_key(settings):
+    from ra.worker import build_deps
+
+    deps = build_deps(settings, store=None)
+    assert deps.llm is None
+
+
+def test_build_deps_builds_the_model_client_when_a_key_is_set():
+    from ra.config import Settings
+    from ra.worker import build_deps
+
+    with_key = Settings(anthropic_api_key="sk-ant-test", tavily_api_key=None)
+    deps = build_deps(with_key, store=None)
+    assert deps.llm is not None

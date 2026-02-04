@@ -14,7 +14,18 @@ TEST_REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/1")
 
 @pytest.fixture
 def settings() -> Settings:
-    return Settings(redis_url=TEST_REDIS_URL, lease_ttl_s=2, worker_id="worker-test")
+    """Test settings, explicitly keyless.
+
+    The keys are pinned to None so the suite behaves the same whether or not the developer
+    has a .env on disk. Anything that needs a key builds its own Settings.
+    """
+    return Settings(
+        redis_url=TEST_REDIS_URL,
+        lease_ttl_s=2,
+        worker_id="worker-test",
+        anthropic_api_key=None,
+        tavily_api_key=None,
+    )
 
 
 @pytest_asyncio.fixture

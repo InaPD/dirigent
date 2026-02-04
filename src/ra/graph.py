@@ -12,13 +12,16 @@ goto API would express the same thing, but these three are the oldest and most s
 surface LangGraph has, and the point of this file is that it does not move.
 """
 
+from collections.abc import Awaitable, Callable
+
 from langgraph.graph import END, START, StateGraph
 
+from ra.budgets import apply_budget_stop, check_budgets
 from ra.deps import Deps
-from ra.nodes.base import NodeFn, as_graph_node
 from ra.nodes.canned import CANNED_NODES
 from ra.routing import route
 from ra.schemas import RunState
+from ra.trace import NodeFn, as_graph_node
 
 WORK_NODES = ("plan", "research", "review", "write")
 
@@ -27,9 +30,28 @@ WORK_NODES = ("plan", "research", "review", "write")
 RECURSION_LIMIT = 100
 
 
-async def router(state: RunState) -> dict:
-    """Pass through in Phase 1. Phase 2 adds the budget check and its step record."""
-    return {}
+def make_router(deps: Deps) -> Callable[[RunState], Awaitable[dict]]:
+    """The router checks the caps, then the conditional edge asks route() where to go.
+
+    It is a node rather than a bare edge function so that a tripped cap can be written into
+    the trace as a step, with the names of the caps that tripped.
+    """
+
+    async def router(state: RunState) -> dict:
+        if state.is_terminal or state.budget_stopped:
+            return {}
+
+        verdict = check_budgets(state, next_node=route(state))
+        if verdict.ok:
+            return {}
+
+        stopped = apply_budget_stop(state, verdict)
+        await deps.store.save(stopped)
+        if stopped.worker_id:
+            await deps.store.refresh_lease(stopped.run_id, stopped.worker_id)
+        return stopped.model_dump()
+
+    return router
 
 
 def select_nodes(deps: Deps) -> dict[str, NodeFn]:
@@ -40,7 +62,7 @@ def select_nodes(deps: Deps) -> dict[str, NodeFn]:
 def build_graph(deps: Deps):
     """Compile the graph. One per process; it holds no run state."""
     builder = StateGraph(RunState)
-    builder.add_node("router", router)
+    builder.add_node("router", make_router(deps))
     builder.add_edge(START, "router")
 
     nodes = select_nodes(deps)

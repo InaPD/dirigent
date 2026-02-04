@@ -89,12 +89,14 @@ async def write(state: RunState, deps: Deps) -> NodeOutcome:
         for sq in state.plan
     ]
     report = Report(title=state.question, sections=sections, generated_at=now())
+    # A run that was cut short keeps saying so. It gets a report, not a clean bill of health.
+    final_status = "budget_exceeded" if state.budget_stopped else "done"
     return NodeOutcome(
         state=state.model_copy(
             update={
                 "report": report,
                 "report_markdown": _canned_markdown(report),
-                "status": "done",
+                "status": final_status,
                 "finished_at": now(),
             }
         )

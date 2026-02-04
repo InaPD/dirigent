@@ -313,6 +313,11 @@ in a module docstring. Unknown model -> raise at import of the config, not at ru
 Verified against the installed SDK: `anthropic` 1.5.0 exposes
 `AsyncAnthropic().messages.parse` with both `output_format` and `output_config`.
 
+**The SDK runs on `httpx2`, not `httpx`, so respx cannot intercept it.** Tests pass a
+`httpx2.MockTransport` through the `http_client` argument instead, pointed at a fake host so
+a mock that fails to match cannot reach the real API. This applies only to the Anthropic
+client. Phase 3's `search.py` uses `httpx` directly, so respx works there as planned.
+
 `class LLM` wrapping `anthropic.AsyncAnthropic`. One public method:
 
 ```python
@@ -372,11 +377,19 @@ the current node *is* `write`), `now - started_at > max_wall_clock_s`, `tavily_c
 max_tavily_credits`. Per-sub-question caps (`max_searches_per_sq`, `max_extracts_per_sq`)
 are enforced inside `research`, not here. `max_subquestions` is enforced in `plan`.
 
-Router change: before dispatching, `if not verdict.ok and state.status != "budget_exceeded"`:
-set `status="budget_exceeded"`, record a `StepRecord(node="budget", status="budget_exceeded",
-error=", ".join(exceeded))`, then `goto="write"` if `state.findings` else `END` with
-`finished_at` set. The write node runs once more with the reserve. If write itself trips
-the wall clock, it still runs; the cap is advisory for the final write.
+Router change: before dispatching, check the caps. When one trips, record a
+`StepRecord(node="budget", status="budget_exceeded", error=", ".join(exceeded))` and set a
+**`budget_stopped: bool` flag on `RunState`**, then route to `write` if there are findings,
+else end. The write node runs once more with the reserve and sets the final status.
+
+The flag is separate from `status` on purpose. If the router set `status="budget_exceeded"`
+directly, a client polling for a terminal status would see the run finish a full node before
+the report existed, and would read `report_markdown: null` from a run that was about to
+produce one. So a stopped run with findings stays `running` until the writer is done, and
+`route()` dispatches on `budget_stopped` rather than on the status. A stopped run with no
+findings has nothing to write, so it does end immediately.
+
+If write itself trips the wall clock it still runs; the cap is advisory for the final write.
 
 ### 2.5 Tests
 
@@ -385,9 +398,11 @@ the wall clock, it still runs; the cap is advisory for the final write.
   usage copied verbatim and `stop_reason="max_tokens"` raises.
 - `test_trace.py`: decorator appends one step, totals increase, save and refresh called,
   exception inside node -> `status="error"` and run continues.
-- `test_budgets.py`: parametrised over each cap set to 1 with the canned nodes -> run ends
+- `test_budgets.py`: parametrised over each cap with spend already past it -> run ends
   `budget_exceeded`, `report_markdown` is not `None` when findings existed, `None` otherwise,
-  and a `budget` step appears in the trace.
+  and a `budget` step appears in the trace naming every cap that tripped. Note that a cap
+  measures spend, not intent: a token cap of 1 does not trip a run that has spent nothing,
+  so the parametrised cases seed the spend they are testing.
 
 **Exit:** `GET /research/{id}/trace` shows model, tokens, cost, latency per step.
 Caps provably stop a run.
