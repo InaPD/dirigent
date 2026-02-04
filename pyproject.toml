@@ -1,0 +1,55 @@
+[project]
+name = "ra"
+version = "0.1.0"
+description = "Multi-agent research assistant with durable run state, budgets, and step-level tracing"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "arq",
+    "redis",
+    "langgraph",
+    "anthropic",
+    "httpx",
+    "pydantic>=2",
+    "pydantic-settings",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "respx",
+    "fakeredis[lua]",
+    "ruff",
+    "pre-commit",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ra"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+markers = [
+    "live: hits real Anthropic and Tavily APIs; needs keys, excluded from CI",
+    "redis: needs a real Redis server on REDIS_URL",
+]
+
+[tool.coverage.run]
+source = ["ra"]
+omit = ["src/ra/replay.py"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
