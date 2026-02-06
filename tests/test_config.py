@@ -67,3 +67,14 @@ def test_an_explicit_none_beats_a_key_in_the_environment(monkeypatch):
 
     assert Settings().anthropic_api_key is not None
     assert Settings(anthropic_api_key=None).anthropic_api_key is None
+
+
+def test_an_empty_environment_variable_is_not_a_key(monkeypatch):
+    """An exported but empty key must not look configured, or nodes fail instead of falling back."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("TAVILY_API_KEY", "   ")
+
+    settings = Settings()
+
+    assert settings.anthropic_api_key is None
+    assert settings.tavily_api_key is None

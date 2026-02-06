@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from ra.budgets import apply_budget_stop, check_budgets
 from ra.deps import Deps
 from ra.nodes.canned import CANNED_NODES
+from ra.nodes.research import research
 from ra.routing import route
 from ra.schemas import RunState
 from ra.trace import NodeFn, as_graph_node
@@ -55,8 +56,15 @@ def make_router(deps: Deps) -> Callable[[RunState], Awaitable[dict]]:
 
 
 def select_nodes(deps: Deps) -> dict[str, NodeFn]:
-    """Which implementation of each node to use. Phase 1 has only the canned set."""
-    return dict(CANNED_NODES)
+    """Which implementation of each node to use.
+
+    A node falls back to its canned stand-in when its dependencies are missing, which is what
+    lets the whole pipeline run in tests and in CI with no credentials.
+    """
+    nodes = dict(CANNED_NODES)
+    if deps.llm is not None and deps.search is not None:
+        nodes["research"] = research
+    return nodes
 
 
 def build_graph(deps: Deps):

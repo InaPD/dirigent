@@ -415,27 +415,49 @@ This is the first risky phase. Budget the whole evening for it.
 
 ### 3.1 `search.py`
 
-`class Tavily(http: httpx.AsyncClient, store: RunStore)` using `httpx` directly (not the
-Tavily SDK) so `respx` can mock it and so the cache layer sits in one place.
+`class Tavily(api_key: str, store: RunStore, client: httpx.AsyncClient | None)` using
+`httpx` directly (not the Tavily SDK) so `respx` can mock it and so the cache layer sits in
+one place.
+
+Request and response shapes verified against the Tavily API reference on 14 Sep 2026:
+base `https://api.tavily.com`, auth `Authorization: Bearer tvly-...`. Search takes `query`,
+`search_depth` (basic 1 credit, advanced 2) and `max_results`; each result carries `title`,
+`url`, `content` and `score`. Extract takes `urls` (max 20) and `extract_depth`, returning
+`results[].raw_content` plus `failed_results[].error`. Basic extraction costs 1 credit per
+5 successful URLs.
+
+**Pass `include_usage: true` on both calls.** The response then carries `usage.credits`, so
+credits are read rather than computed, the same rule the token accounting follows. The
+documented rates stay in the code only as a fallback for a response with no usage block.
 
 ```python
 async def search(self, query: str, *, depth="basic", max_results=5) -> SearchResult
 async def extract(self, urls: list[str]) -> list[ExtractResult]
 ```
 
-`SearchResult(status, results: list[Hit], credits: int, cached: bool)` and
-`ExtractResult(url, status: ExtractionStatus, title, content, credits)`.
+`SearchOutcome(status, hits: list[Hit], credits, cached, error, tool_call)` and
+`ExtractBatch(results: list[ExtractOutcome], credits, tool_calls)`. Credits are charged per
+request, not per URL, so extraction returns a batch rather than a bare list.
 
 Failure mapping, exhaustive, in one function `classify_response(resp | exc) -> status`:
 
 | Condition | Status |
 |---|---|
-| 200, empty results | `skipped` (search) |
+| 200, empty results | `empty`, which the node records as `skipped` |
 | 200, extract body empty or under 200 chars | `paywalled` |
 | 200, extract failed entry in `failed_results` | `error` |
-| 429 | honour `Retry-After` once (cap 10 s), then `error` |
+| 200, a requested URL in neither list | `error` |
+| 429 | honour `Retry-After` once (cap 10 s), then `rate_limited` |
+| 429 with an unparseable or oversized `Retry-After` | `error`, with no wait |
 | `httpx.TimeoutException` | `timeout` |
-| any other 4xx/5xx or connection error | `error` |
+| any other 4xx/5xx, connection error, or malformed JSON | `error` |
+
+**`extraction_status` describes the content held, not the reason it fell short.** `full` is
+the page body; `snippet_only` means the search snippet was used instead, whatever the
+reason; `paywalled`, `timeout` and `error` mean nothing usable came back at all. The reason
+lives on the `ToolCall`, where it belongs. Keeping the two apart is what lets the writer
+rank sources on quality without knowing anything about HTTP. One function,
+`resolve_extraction(extract, hit)`, makes that call.
 
 Cache keys `cache:search:{sha256(query|depth|max_results)}` and `cache:extract:{sha256(url)}`,
 TTL 7 days. Cache hits report `credits=0`. Every call appends a `ToolCall` to the current
@@ -455,11 +477,11 @@ One sub-question per invocation:
    `claim`, `source_url`, `snippet` (max 400 chars). Prompt: "Return at most 5 findings that
    directly answer the sub-question. Each claim must be supported by the quoted snippet
    from the given source. Skip sources that do not help." Content per source is truncated
-   to 6,000 characters before prompting; record the truncation in the step error field as
-   `truncated:N` for honesty, not as a failure.
+   to 6,000 characters before prompting; record the truncation as `truncated:N` in the
+   step's `note` field, not `error`, because it is not a failure.
 6. Each draft becomes a `Finding` with `extraction_status` copied from its source's
    `ExtractResult` and `id=new_finding_id()`. Drafts pointing at URLs not in the batch are
-   dropped (the LLM invented a URL) and counted in the step error field as `dropped:N`.
+   dropped (the LLM invented a URL) and counted in the step's `note` field as `dropped:N`.
 7. `sq.passes += 1`, `sq.status = "answered"` if any finding else `"unanswerable"`.
    The review node may later flip `answered` to `needs_one_more_pass`.
 8. `tavily_credits` incremented by the sum of `ToolCall.credits`.
@@ -471,8 +493,11 @@ sub-question landed or none of it did.
 ### 3.3 Tests
 
 - `test_search.py` with `respx`: 429 with `Retry-After: 1` -> one retry then success; 429
-  twice -> `error`; timeout -> `timeout`; empty body -> `paywalled`; second identical call
-  -> `cached=True, credits=0`.
+  twice -> `rate_limited`; an oversized `Retry-After` -> no wait at all; timeout ->
+  `timeout`; 4xx, 5xx, connection failure and malformed JSON -> `error`; short body ->
+  `paywalled`; second identical call -> `cached=True, credits=0`. A blank
+  `ANTHROPIC_API_KEY` or `TAVILY_API_KEY` counts as absent, so an exported-but-empty
+  variable falls back to the canned node rather than failing on the first call.
 - `test_research_node.py`: `FakeLLM` returns drafts including one invented URL; assert it
   is dropped, the rest have correct `extraction_status`, URL dedupe against prior findings,
   `passes` incremented, per-sq caps respected (count `ToolCall`s).

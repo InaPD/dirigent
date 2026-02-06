@@ -15,6 +15,7 @@ from ra.deps import Deps
 from ra.graph import RECURSION_LIMIT, build_graph
 from ra.llm import LLM
 from ra.schemas import RunState
+from ra.search import Tavily
 from ra.store import RunStore, make_redis
 
 log = logging.getLogger("ra.worker")
@@ -94,7 +95,14 @@ def build_deps(settings, store: RunStore) -> Deps:
     llm = LLM.from_api_key(settings.require_anthropic_key()) if settings.anthropic_api_key else None
     if llm is None:
         log.warning("no ANTHROPIC_API_KEY, model-backed nodes will not run")
-    return Deps(store=store, settings=settings, llm=llm)
+
+    search = (
+        Tavily(settings.require_tavily_key(), store) if settings.tavily_api_key and store else None
+    )
+    if search is None:
+        log.warning("no TAVILY_API_KEY, the researcher will fall back to canned findings")
+
+    return Deps(store=store, settings=settings, llm=llm, search=search)
 
 
 async def on_startup(ctx: dict) -> None:
@@ -105,12 +113,16 @@ async def on_startup(ctx: dict) -> None:
     ctx["redis"] = redis
     ctx["store"] = store
     ctx["worker_id"] = settings.worker_id
-    ctx["graph"] = build_graph(build_deps(settings, store))
+    ctx["deps"] = build_deps(settings, store)
+    ctx["graph"] = build_graph(ctx["deps"])
     ctx["pool"] = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     log.info("worker %s ready", settings.worker_id)
 
 
 async def on_shutdown(ctx: dict) -> None:
+    deps = ctx.get("deps")
+    if deps is not None and deps.search is not None:
+        await deps.search.aclose()
     for key in ("redis", "pool"):
         client = ctx.get(key)
         if client is not None:

@@ -115,3 +115,23 @@ async def test_research_with_nothing_open_records_a_skip(deps):
     outcome = await research(state, deps)
     assert outcome.status == "skipped"
     assert outcome.error == "no open sub-question"
+
+
+def test_the_researcher_needs_both_of_its_clients(deps):
+    """Without keys the canned stand-in runs, which is what keeps CI credential free."""
+    from ra.deps import Deps
+    from ra.graph import select_nodes
+    from ra.nodes.canned import research as canned_research
+    from ra.nodes.research import research as real_research
+    from tests.fakes import FakeLLM, FakeSearch
+
+    assert select_nodes(deps)["research"] is canned_research
+
+    llm_only = Deps(store=deps.store, settings=deps.settings, llm=FakeLLM())
+    assert select_nodes(llm_only)["research"] is canned_research
+
+    search_only = Deps(store=deps.store, settings=deps.settings, search=FakeSearch())
+    assert select_nodes(search_only)["research"] is canned_research
+
+    both = Deps(store=deps.store, settings=deps.settings, llm=FakeLLM(), search=FakeSearch())
+    assert select_nodes(both)["research"] is real_research

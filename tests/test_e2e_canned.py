@@ -35,8 +35,14 @@ def fast_nodes(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def test_redis_env(monkeypatch):
-    """Point every component, including the worker's own on_startup, at the test database."""
+    """Point every component, including the worker's own on_startup, at the test database.
+
+    The keys are blanked so the worker selects the canned nodes. This test is about the
+    pipeline, and it has to pass on a machine with a real .env and in CI without one.
+    """
     monkeypatch.setenv("REDIS_URL", TEST_REDIS_URL)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    monkeypatch.setenv("TAVILY_API_KEY", "")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

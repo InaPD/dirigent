@@ -4,7 +4,7 @@ import os
 import socket
 from functools import lru_cache
 
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ra.pricing import price_for
@@ -50,6 +50,18 @@ class Settings(BaseSettings):
     # runs without keys. Nodes that need one call require_* below and get a clear error.
     anthropic_api_key: SecretStr | None = None
     tavily_api_key: SecretStr | None = None
+
+    @field_validator("anthropic_api_key", "tavily_api_key", mode="before")
+    @classmethod
+    def _blank_is_absent(cls, v):
+        """An exported but empty variable is not a key.
+
+        Without this, ANTHROPIC_API_KEY="" reads as configured, and the run fails on the
+        first call instead of falling back to the canned node.
+        """
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
 
     redis_url: str = "redis://localhost:6379/0"
 
