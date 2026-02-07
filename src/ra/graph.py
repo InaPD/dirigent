@@ -19,7 +19,10 @@ from langgraph.graph import END, START, StateGraph
 from ra.budgets import apply_budget_stop, check_budgets
 from ra.deps import Deps
 from ra.nodes.canned import CANNED_NODES
+from ra.nodes.plan import plan
 from ra.nodes.research import research
+from ra.nodes.write import write
+from ra.progress import apply_stall_stop, is_stalled
 from ra.routing import route
 from ra.schemas import RunState
 from ra.trace import NodeFn, as_graph_node
@@ -42,11 +45,13 @@ def make_router(deps: Deps) -> Callable[[RunState], Awaitable[dict]]:
         if state.is_terminal or state.budget_stopped:
             return {}
 
-        verdict = check_budgets(state, next_node=route(state))
-        if verdict.ok:
-            return {}
-
-        stopped = apply_budget_stop(state, verdict)
+        if is_stalled(state):
+            stopped = apply_stall_stop(state)
+        else:
+            verdict = check_budgets(state, next_node=route(state))
+            if verdict.ok:
+                return {}
+            stopped = apply_budget_stop(state, verdict)
         await deps.store.save(stopped)
         if stopped.worker_id:
             await deps.store.refresh_lease(stopped.run_id, stopped.worker_id)
@@ -62,6 +67,9 @@ def select_nodes(deps: Deps) -> dict[str, NodeFn]:
     lets the whole pipeline run in tests and in CI with no credentials.
     """
     nodes = dict(CANNED_NODES)
+    if deps.llm is not None:
+        nodes["plan"] = plan
+        nodes["write"] = write
     if deps.llm is not None and deps.search is not None:
         nodes["research"] = research
     return nodes

@@ -1,6 +1,10 @@
 """Stand-ins for the queue, the model and the search API."""
 
+import re
+
 from ra.llm import LLMError, LLMResult
+from ra.nodes.research import FindingDraft, FindingDrafts
+from ra.nodes.write import ClaimDraft, ReportDraft, SectionDraft
 from ra.schemas import ToolCall, Usage
 from ra.search import ExtractBatch, ExtractOutcome, Hit, SearchOutcome
 
@@ -24,6 +28,10 @@ class FakePool:
 class FakeLLM:
     """Answers by schema. A queued Exception is raised instead of returned.
 
+    A queued callable is handed the prompt and returns the answer, which is how a fake
+    writer can cite the finding ids it was actually shown. Finding ids are generated at
+    run time, so a fixed response could not know them.
+
     The last queued item for a schema repeats, so a test only queues what it cares about.
     """
 
@@ -40,6 +48,8 @@ class FakeLLM:
         item = queue.pop(0) if len(queue) > 1 else queue[0]
         if isinstance(item, Exception):
             raise item
+        if callable(item):
+            item = item(user)
         return LLMResult[schema](parsed=item, usage=self.usage, model=model, latency_ms=1)
 
     def prompts_for(self, schema) -> list[str]:
@@ -108,3 +118,44 @@ class FakeSearch:
 
     async def aclose(self):
         return None
+
+
+FINDING_ID = re.compile(r"\bf_[0-9a-f]{6}\b")
+
+
+def citing_writer(*, title: str = "A Report", invent: str | None = None):
+    """A writer fake that cites the finding ids it was given, like a well behaved model.
+
+    Pass `invent` to have it cite one id that was never in the prompt, which is the case
+    citation validation exists to catch.
+    """
+
+    def build(prompt: str) -> ReportDraft:
+        ids = list(dict.fromkeys(FINDING_ID.findall(prompt)))
+        claims = [ClaimDraft(text=f"Claim about {fid}.", finding_ids=[fid]) for fid in ids]
+        if invent:
+            claims.append(ClaimDraft(text="An unsupported claim.", finding_ids=[invent]))
+        return ReportDraft(title=title, sections=[SectionDraft(heading="Findings", claims=claims)])
+
+    return build
+
+
+SOURCE_URL = re.compile(r"^SOURCE (\S+)$", re.MULTILINE)
+
+
+def citing_researcher(claim: str = "Something true about {url}."):
+    """A researcher fake that drafts one finding per source it was actually shown."""
+
+    def build(prompt: str) -> FindingDrafts:
+        return FindingDrafts(
+            findings=[
+                FindingDraft(
+                    claim=claim.format(url=url),
+                    source_url=url,
+                    snippet="quoted from the page",
+                )
+                for url in SOURCE_URL.findall(prompt)
+            ]
+        )
+
+    return build

@@ -15,8 +15,15 @@ from ra.deps import Deps
 from ra.graph import RECURSION_LIMIT, build_graph
 from ra.ids import sq_id
 from ra.nodes.research import FindingDraft, FindingDrafts
+from ra.nodes.write import ReportDraft
 from ra.schemas import Budgets, RunState, SubQuestion
-from tests.fakes import FakeLLM, FakeSearch, extract_batch, search_outcome
+from tests.fakes import (
+    FakeLLM,
+    FakeSearch,
+    citing_writer,
+    extract_batch,
+    search_outcome,
+)
 
 PLAN = [
     "What does durable execution mean for an agent framework?",
@@ -47,7 +54,8 @@ def researching_deps(deps) -> Deps:
                     ]
                 )
                 for url in URLS
-            ]
+            ],
+            ReportDraft: [citing_writer(title="Durable agent execution")],
         }
     )
     search = FakeSearch(

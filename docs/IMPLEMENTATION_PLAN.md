@@ -514,9 +514,14 @@ sub-question landed or none of it did.
 
 Model `planner`. Schema `Plan(sub_questions: list[str])`. Prompt asks for 2 to N
 independently searchable, non-overlapping sub-questions, N = `max_subquestions`, one line
-each, no numbering. Truncate to N if the model over-delivers. Assign `sq_01..`. Fewer than
-one sub-question -> `status="error"` on the step and the router sends the run to `write`
-with no findings, which ends with `failed` and a clear error. The node never raises.
+each, no numbering. Truncate to N if the model over-delivers. Assign `sq_01..`.
+
+**No plan means the run fails here, in the planner.** The original plan routed an empty plan
+to `write`, but the router sends a run with no plan straight back to the planner, so anything
+short of ending the run is an infinite loop. Measured before the fix: a bad API key produced
+50 planner attempts before the graph hit its recursion limit, each one a paid call. The node
+therefore catches every exception, not just `LLMError`, and any failure to produce
+sub-questions sets `status="failed"` with the reason.
 
 ### 4.2 `nodes/write.py`
 
@@ -531,18 +536,24 @@ Rules: every claim cites at least one finding id from the list; prefer [full] fi
 do not introduce facts that are not in a finding; 3 to 6 sections.
 ```
 
-Validation `validate_citations(report, findings) -> set[str]` returns the unknown ids.
-Non-empty -> one retry with the message "These ids do not exist: ... Use only ids from the
-list." Still non-empty -> step `status="error"`, run `status="failed"`, error
-`"citation validation failed: f_zz..."`. Never render an unvalidated report.
+Validation `validate_citations(draft, findings) -> list[str]` returns the complaints, and
+an empty list is the only thing that permits rendering. It catches two faults: an id that is
+not in `state.findings`, and a claim that cites nothing at all. The second matters as much as
+the first, since an uncited claim is exactly the unsupported assertion the whole design is
+meant to make impossible.
 
-If `state.status == "budget_exceeded"`, the prompt gains one line: "Research was cut short
-by a budget cap; say so in a short closing note." Report title gets a `(partial)` suffix
-in the renderer, not from the LLM.
+Non-empty -> one retry, with the offending ids named in the prompt. Still non-empty -> step
+`status="error"`, run `status="failed"`, error `"citation validation failed: ..."`. Never
+render an unvalidated report.
+
+If `state.budget_stopped`, the prompt gains one line: "Research was cut short by a budget
+cap; say so in a short closing note." The report title gets a `(partial)` suffix in the
+renderer, never from the model.
 
 ### 4.3 `render.py`
 
-Pure function `render_markdown(report: Report, findings: list[Finding]) -> str`.
+Pure function `render_markdown(report, findings, *, partial: bool = False) -> str`. The
+`partial` flag is what adds the title suffix; replay passes `state.budget_stopped` for it.
 Footnote numbering is by first appearance of a finding id, stable across re-renders.
 Output: title, sections with claims as paragraphs each ending in `[n]` markers, then a
 `## Sources` list `[n] title - url (retrieved YYYY-MM-DD, status)`. Deterministic: no
@@ -718,6 +729,14 @@ for one README screenshot.
 ---
 
 ## Cross-cutting notes
+
+**The stall guard (`progress.py`).** The router deriving the next node from state is what
+makes resume trivial, and it is also what makes a failing node loop: a node that errors
+without changing anything gets sent straight back in. So if the last three steps are all
+errors whose `input_digest` equals their `output_digest`, the run is failed with the node
+named. Three, because each attempt can be a paid call. The planner's own check above ends a
+run on the first failure; this guard is the net under every other node, including the ones
+Phase 5 adds.
 
 **Immutability in nodes.** `state.model_copy(update={...})` for scalar fields;
 `[*state.findings, *new]` for lists; never `state.findings.append`. The trace decorator
