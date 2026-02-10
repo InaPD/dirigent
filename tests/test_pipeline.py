@@ -14,6 +14,7 @@ from ra.deps import Deps
 from ra.graph import RECURSION_LIMIT, build_graph
 from ra.nodes.plan import PlanDraft
 from ra.nodes.research import FindingDrafts
+from ra.nodes.review import Review
 from ra.nodes.write import ReportDraft
 from ra.schemas import Budgets, RunState
 from tests.fakes import (
@@ -22,6 +23,7 @@ from tests.fakes import (
     citing_researcher,
     citing_writer,
     extract_batch,
+    reviewing,
     search_outcome,
 )
 
@@ -53,6 +55,7 @@ def pipeline_deps(deps, *, writer=None) -> Deps:
         {
             PlanDraft: [PlanDraft(sub_questions=SUB_QUESTIONS)],
             FindingDrafts: [citing_researcher()],
+            Review: [reviewing()],
             ReportDraft: [writer or citing_writer(title="Durable agent execution")],
         }
     )

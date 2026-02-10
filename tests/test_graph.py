@@ -135,3 +135,20 @@ def test_the_researcher_needs_both_of_its_clients(deps):
 
     both = Deps(store=deps.store, settings=deps.settings, llm=FakeLLM(), search=FakeSearch())
     assert select_nodes(both)["research"] is real_research
+
+
+def test_a_stub_overrides_the_node_it_replaces(deps):
+    """RA_STUB is how the crash-resume test gets a researcher it can pause."""
+    from ra.config import Settings
+    from ra.deps import Deps
+    from ra.graph import select_nodes
+    from ra.nodes.stubs import fast_research, slow_research
+
+    def with_stub(name):
+        settings = Settings(anthropic_api_key=None, tavily_api_key=None, stub=name)
+        return select_nodes(Deps(store=deps.store, settings=settings))
+
+    assert with_stub("slow_research")["research"] is slow_research
+    assert with_stub("fast_research")["research"] is fast_research
+    # everything else keeps its normal implementation
+    assert with_stub("fast_research")["plan"] is select_nodes(deps)["plan"]

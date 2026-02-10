@@ -50,6 +50,11 @@ class RunStore:
         self._refresh = redis.register_script(_REFRESH_LUA)
         self._release = redis.register_script(_RELEASE_LUA)
 
+    @property
+    def client(self) -> Redis:
+        """The underlying client, for the few things that need Redis and not a run document."""
+        return self._r
+
     # -- run document -------------------------------------------------------------
 
     async def save(self, state: RunState) -> None:

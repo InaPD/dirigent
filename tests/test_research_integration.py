@@ -15,6 +15,7 @@ from ra.deps import Deps
 from ra.graph import RECURSION_LIMIT, build_graph
 from ra.ids import sq_id
 from ra.nodes.research import FindingDraft, FindingDrafts
+from ra.nodes.review import Review
 from ra.nodes.write import ReportDraft
 from ra.schemas import Budgets, RunState, SubQuestion
 from tests.fakes import (
@@ -22,6 +23,7 @@ from tests.fakes import (
     FakeSearch,
     citing_writer,
     extract_batch,
+    reviewing,
     search_outcome,
 )
 
@@ -55,6 +57,7 @@ def researching_deps(deps) -> Deps:
                 )
                 for url in URLS
             ],
+            Review: [reviewing()],
             ReportDraft: [citing_writer(title="Durable agent execution")],
         }
     )

@@ -18,7 +18,7 @@ async def client(store: RunStore, settings):
     app = create_app()
     app.state.settings = settings
     app.state.store = store
-    app.state.redis = store._r
+    app.state.redis = store.client
     app.state.pool = FakePool()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:

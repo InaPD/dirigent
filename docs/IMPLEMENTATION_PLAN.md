@@ -587,6 +587,17 @@ Apply: `needs_one_more_pass` is honoured only while `revisions_used < max_revisi
 `revisions_used` if any sub-question was reopened. The step's `error` field is not used for
 reasons; add `note: str | None = None` to `StepRecord` and put the joined reasons there.
 
+Two rules the reviewer does not get to break.
+
+**A verdict of `answered` on a sub-question with no findings is downgraded to
+`unanswerable`.** The verdict still reaches the trace, but the plan stays honest: a
+sub-question with nothing behind it is not answered, whatever the model says.
+
+**A reviewer that fails does not fail the run.** Any exception sets `reviewed = True` and
+records the reason, so the writer still gets its turn. A report from unreviewed findings
+beats no report. It also has to change the state, or the Phase 4 stall guard would see a
+node erroring without progressing and end the run.
+
 Time-box prompt tuning to one hour. The trace makes a mediocre reviewer visible, which is
 enough for this week.
 
@@ -618,7 +629,21 @@ async def sweep(ctx):
 
 Two workers can both sweep at the same second; `acquire_lease` inside `run_graph` makes
 the second one a no-op, and the `attempt`-suffixed `job_id` means both enqueues target the
-same id, so arq drops the duplicate. Add a `sweeps` counter to `/healthz` for visibility.
+same id, so arq drops the duplicate. Use `run_at_startup=True`, so a worker starting after a
+crash sweeps immediately rather than waiting for the next slot.
+
+**The sweeper needs the lease heartbeat to exist first.** A node can legitimately outlive the
+60s TTL, and without a heartbeat the sweeper re-enqueues healthy but slow runs. `run_graph`
+starts an `asyncio.Task` that refreshes every `lease_ttl_s / 3` and cancels it in `finally`.
+The heartbeat stops on its own if the refresh fails, which means another worker has taken
+over and this one should let go. `test_a_live_run_is_not_swept_out_from_under_its_worker`
+holds a run at a gate for three lease lifetimes and asserts it is never re-enqueued.
+
+**Where the stubs live.** `src/ra/nodes/stubs.py`, not `tests/`, because the crash-resume
+test runs real worker processes and a subprocess can only import what is installed. They are
+selected with `RA_STUB`, which nothing else sets, and `select_nodes` applies them last so
+they win. `stubs.py` is omitted from coverage: it runs inside the worker subprocesses, where
+the coverage run in the test process cannot see it.
 
 ### 5.3 `test_resume_after_kill.py`
 

@@ -21,6 +21,8 @@ from ra.deps import Deps
 from ra.nodes.canned import CANNED_NODES
 from ra.nodes.plan import plan
 from ra.nodes.research import research
+from ra.nodes.review import review
+from ra.nodes.stubs import STUBS
 from ra.nodes.write import write
 from ra.progress import apply_stall_stop, is_stalled
 from ra.routing import route
@@ -69,9 +71,13 @@ def select_nodes(deps: Deps) -> dict[str, NodeFn]:
     nodes = dict(CANNED_NODES)
     if deps.llm is not None:
         nodes["plan"] = plan
+        nodes["review"] = review
         nodes["write"] = write
     if deps.llm is not None and deps.search is not None:
         nodes["research"] = research
+    if deps.settings.stub:
+        # Test scaffolding, selected with RA_STUB. Applied last so it wins.
+        nodes.update(STUBS[deps.settings.stub])
     return nodes
 
 

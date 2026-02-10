@@ -4,9 +4,11 @@ The API only enqueues and reads. A FastAPI BackgroundTask would die with the API
 and surviving exactly that is the point of the project.
 """
 
+import asyncio
+import contextlib
 import logging
 
-from arq import create_pool
+from arq import create_pool, cron
 from arq.connections import ArqRedis, RedisSettings
 
 from ra.clock import now
@@ -37,6 +39,21 @@ async def enqueue_run(pool: ArqRedis, state: RunState) -> None:
     await pool.enqueue_job("run_graph", state.run_id, _job_id=job_id(state))
 
 
+async def _hold_lease(store: RunStore, run_id: str, worker_id: str) -> None:
+    """Keep the lease alive while a slow node runs.
+
+    Nodes refresh the lease when they finish, but a node can legitimately outlive the TTL:
+    a batch of extractions plus a Sonnet call is easily more than a minute. Without this the
+    sweeper would re-enqueue a run that is perfectly healthy, just slow.
+    """
+    interval = max(1.0, store.lease_ttl_s / 3)
+    while True:
+        await asyncio.sleep(interval)
+        if not await store.refresh_lease(run_id, worker_id):
+            log.warning("run %s lost its lease while running", run_id)
+            return
+
+
 async def run_graph(ctx: dict, run_id: str) -> None:
     """Take the lease, run the graph to completion, release the lease."""
     store: RunStore = ctx["store"]
@@ -46,6 +63,7 @@ async def run_graph(ctx: dict, run_id: str) -> None:
         log.info("run %s already leased, skipping", run_id)
         return
 
+    heartbeat = asyncio.create_task(_hold_lease(store, run_id, worker_id))
     try:
         state = await store.load(run_id)
         if state is None:
@@ -83,7 +101,40 @@ async def run_graph(ctx: dict, run_id: str) -> None:
                 )
             )
     finally:
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
         await store.release_lease(run_id, worker_id)
+
+
+async def sweep(ctx: dict) -> None:
+    """Re-enqueue runs whose worker died.
+
+    A lease outlives its worker by at most its TTL. A run that is still marked running with
+    no lease behind it has nobody working on it, so it goes back on the queue. The router
+    picks it up from wherever it got to, because the next step is derived from the state.
+    """
+    store: RunStore = ctx["store"]
+    pool: ArqRedis = ctx["pool"]
+
+    for run_id in await store.active_runs():
+        state = await store.load(run_id)
+        if state is None or state.status != "running":
+            await store.forget_active(run_id)
+            continue
+        if await store.lease_holder(run_id) is not None:
+            continue
+
+        bumped = state.model_copy(update={"attempt": state.attempt + 1})
+        await store.save(bumped)
+        await enqueue_run(pool, bumped)
+        log.warning("re-enqueued orphaned run %s as attempt %d", run_id, bumped.attempt)
+
+
+def sweep_schedule(interval_s: int) -> set[int]:
+    """Which seconds of each minute the sweeper runs on."""
+    interval = max(1, min(interval_s, 60))
+    return set(range(0, 60, interval))
 
 
 def build_deps(settings, store: RunStore) -> Deps:
@@ -133,7 +184,14 @@ class WorkerSettings:
     """Entry point: arq ra.worker.WorkerSettings"""
 
     functions = [run_graph]
-    cron_jobs: list = []  # the sweeper lands here in Phase 5
+    cron_jobs = [
+        cron(
+            sweep,
+            second=sweep_schedule(get_settings().sweeper_interval_s),
+            run_at_startup=True,
+            max_tries=1,
+        )
+    ]
     on_startup = on_startup
     on_shutdown = on_shutdown
     max_jobs = 4

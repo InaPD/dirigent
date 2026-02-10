@@ -4,6 +4,7 @@ import re
 
 from ra.llm import LLMError, LLMResult
 from ra.nodes.research import FindingDraft, FindingDrafts
+from ra.nodes.review import Review, Verdict
 from ra.nodes.write import ClaimDraft, ReportDraft, SectionDraft
 from ra.schemas import ToolCall, Usage
 from ra.search import ExtractBatch, ExtractOutcome, Hit, SearchOutcome
@@ -155,6 +156,23 @@ def citing_researcher(claim: str = "Something true about {url}."):
                     snippet="quoted from the page",
                 )
                 for url in SOURCE_URL.findall(prompt)
+            ]
+        )
+
+    return build
+
+
+SUB_QUESTION_ID = re.compile(r"^(sq_\d{2}):", re.MULTILINE)
+
+
+def reviewing(verdict: str = "answered", reason: str = "the findings support an answer"):
+    """A reviewer fake that returns one verdict per sub-question it was shown."""
+
+    def build(prompt: str) -> Review:
+        return Review(
+            verdicts=[
+                Verdict(sub_question_id=sq, verdict=verdict, reason=reason)
+                for sq in dict.fromkeys(SUB_QUESTION_ID.findall(prompt))
             ]
         )
 

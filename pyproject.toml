@@ -47,7 +47,12 @@ markers = [
 
 [tool.coverage.run]
 source = ["ra"]
-omit = ["src/ra/replay.py"]
+omit = [
+    "src/ra/replay.py",
+    # Exercised by the crash-resume test, but inside worker subprocesses, so the coverage
+    # run in this process cannot see it. Counting it as untested would be misleading.
+    "src/ra/nodes/stubs.py",
+]
 
 [tool.ruff]
 line-length = 100
