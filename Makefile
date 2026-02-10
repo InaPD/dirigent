@@ -1,5 +1,7 @@
 .DEFAULT_GOAL := help
-FIXTURE ?= fixtures/runs/default.json
+# Whichever fixture comes first alphabetically, so this keeps working once you record
+# real runs of your own. Override with: make demo FIXTURE=fixtures/runs/yours.json
+FIXTURE ?= $(firstword $(wildcard fixtures/runs/*.json))
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
@@ -25,4 +27,8 @@ demo: ## Replay a recorded run offline, no keys needed
 record: ## Record a real run to fixtures. Usage: make record Q="your question"
 	uv run python scripts/record_run.py "$(Q)"
 
-.PHONY: help up down test lint fmt demo record
+trace: ## Serve the static trace viewer at http://localhost:8111/demo/trace.html
+	@echo "open http://localhost:8111/demo/trace.html"
+	python3 -m http.server 8111
+
+.PHONY: help up down test lint fmt demo record trace

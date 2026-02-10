@@ -691,7 +691,15 @@ report; if one is bad, keep it anyway and say so in the README. Bad runs with ho
 are part of the story.
 
 Check fixture size. If a fixture exceeds ~300 KB, the `snippet` cap in Phase 3 was not
-enforced somewhere; fix that rather than trimming the fixture.
+enforced somewhere; fix that rather than trimming the fixture. There is a test for this.
+
+**Still outstanding: the committed fixture is a canned run, not a real one.** Recording a
+real run needs keys, so `fixtures/runs/canned-example.json` is a placeholder produced by the
+real graph with the canned nodes. It makes `make demo` work on a clean clone today, and its
+trace is genuine, but every token count and cost in it is zero because no model was called.
+Record three real questions with `make record Q="..."` once keys are in `.env`, delete the
+placeholder, and take the README's trace excerpt from one of those. Do not quote the
+placeholder's numbers anywhere; they are not measurements of anything.
 
 ### 6.2 `replay.py`
 
@@ -705,10 +713,15 @@ Prints one line per step: `seq node sq model tokens_in/out $cost ms status`, sle
 Then prints `render_markdown(state.report, state.findings)` and returns it.
 `python -m ra.replay fixtures/runs/x.json --speed 0` for tests.
 
-Test `test_replay.py`: monkeypatch `httpx.AsyncClient.send` and `httpx.Client.send` to
-raise, replay every fixture with `speed=0`, assert returned markdown equals
-`state.report_markdown` byte for byte. This also pins `render.py`: any rendering change
-must regenerate the fixtures' `report_markdown` deliberately.
+Test `test_replay.py`: block `socket.socket` outright rather than patching an HTTP client,
+replay every fixture at `speed=0`, and assert the returned markdown equals
+`state.report_markdown` byte for byte. This pins `render.py`: any rendering change must
+regenerate the fixtures deliberately.
+
+That byte-identity test caught a real inconsistency on its first run. The canned writer had
+kept the placeholder renderer it was given in Phase 1, so its output disagreed with
+`render.py` in footnotes and sources. Every node now renders through `render.py`, which is
+what makes a canned run a valid golden file for it.
 
 ### 6.3 `Makefile`
 
@@ -717,20 +730,28 @@ up:    docker compose up --build
 down:  docker compose down -v
 test:  uv run pytest --cov=ra --cov-fail-under=80 -m "not live"
 lint:  uv run ruff check . && uv run ruff format --check .
-demo:  uv run python -m ra.replay fixtures/runs/$(or $(FIXTURE),default).json
+demo:  uv run python -m ra.replay $(FIXTURE)
 record: uv run python scripts/record_run.py "$(Q)"
+trace: python3 -m http.server 8111   # then open /demo/trace.html
 ```
+
+`FIXTURE` defaults to the first file in `fixtures/runs/`, so the demo keeps working once the
+placeholder is replaced with real recordings.
 
 `make demo` must work right after `git clone` with only `uv` installed: it imports
 `ra.schemas`, `ra.render`, `ra.replay` and nothing that touches Redis or the network.
 Enforce this with an import test that fails if `ra.replay` transitively imports `redis`,
 `anthropic`, or `arq`.
 
-### 6.4 Optional `demo/trace.html`
+### 6.4 `demo/trace.html`
 
-Single static file, fetches a fixture path from the query string, renders a step table
-and the markdown report. Only if the previous items are done by mid-afternoon. It exists
-for one README screenshot.
+A single static file, no build step and no dependencies, that loads a fixture and renders
+the run header, the step table and the report. It escapes every value before rendering,
+because a fixture is data, not markup. Browsers will not fetch local files, so `make trace`
+serves the repo root and prints the URL; `?fixture=` picks a different run.
+
+**Not yet opened in a browser.** The file serves and the fixture it points at resolves, but
+the rendering itself is unverified. Check it before taking the README screenshot.
 
 **Exit:** `git clone && make demo` works on a machine with no keys.
 

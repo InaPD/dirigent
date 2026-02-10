@@ -10,6 +10,7 @@ import asyncio
 from ra.clock import now
 from ra.deps import Deps
 from ra.ids import new_finding_id, sq_id
+from ra.render import render_markdown
 from ra.routing import next_open_subquestion
 from ra.schemas import (
     Claim,
@@ -95,22 +96,14 @@ async def write(state: RunState, deps: Deps) -> NodeOutcome:
         state=state.model_copy(
             update={
                 "report": report,
-                "report_markdown": _canned_markdown(report),
+                "report_markdown": render_markdown(
+                    report, state.findings, partial=state.budget_stopped
+                ),
                 "status": final_status,
                 "finished_at": now(),
             }
         )
     )
-
-
-def _canned_markdown(report: Report) -> str:
-    """Placeholder renderer. Replaced by render.py in Phase 4."""
-    lines = [f"# {report.title}", ""]
-    for section in report.sections:
-        lines += [f"## {section.heading}", ""]
-        lines += [f"{claim.text}" for claim in section.claims]
-        lines.append("")
-    return "\n".join(lines).strip() + "\n"
 
 
 CANNED_NODES = {"plan": plan, "research": research, "review": review, "write": write}
