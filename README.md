@@ -157,44 +157,6 @@ writer has had its turn, so a status alone can be terminal while the report is s
 `make record Q="your question"` does the same thing and saves the finished run as a fixture
 that `make demo` can replay.
 
-## Before you put this on the internet
-
-There is no authentication. `POST /research` is open and it starts work that costs money,
-and `GET /research/{id}` will hand the question, the report and the full trace to anyone who
-has the id. The rate limiter is per process and keyed on the client address, which makes it
-a courtesy rather than a control: behind a proxy every caller shares one address, and it
-resets when the process restarts. Put a gateway with real authentication in front of this
-before it faces anything public.
-
-What is enforced, because none of it depends on a gateway:
-
-- Budgets arrive from the request body, so every field has a ceiling. A caller may lower a
-  cap but cannot raise one past what the server allows.
-- The research loop checks the run's own caps between searches. Budgets are otherwise only
-  evaluated between nodes, which is too coarse to stop a loop inside one.
-- The request body limit counts the bytes that arrive rather than believing a header.
-- Error text stored on a run is redacted before it is saved, so a connection string or a key
-  inside an exception does not reach whoever can read the run.
-- A source URL must be http or https before it can become a citation.
-- The real spending backstop is a spend limit on the Anthropic workspace, because a cap in
-  code dies with the process.
-
-`report_markdown` contains text a model wrote after reading pages it was sent to. Treat it
-as untrusted: escape or sanitise it before rendering it as HTML, as `demo/trace.html` does.
-
-## Deliberately not done
-
-| Left out | Why |
-|---|---|
-| LangGraph's Redis checkpointer | status, trace and resume all need the state queryable; a checkpointer blob is not, and it needs Redis Stack |
-| `langgraph-supervisor` and subagents-as-tools | the package is unmaintained, and the tools pattern hides routing inside a message list when visible routing is the point |
-| Server-sent events | polling costs twenty minutes to build and nothing here depends on streaming |
-| Per-domain result caps | URL dedupe across the run covers the case that actually came up |
-| More than one revision pass | a second pass rarely changed the answer and always cost money |
-| Budgets at a gateway | the multi-tenant move, and a different project |
-| Authentication, and a shared rate limiter | see the section above; this belongs at a gateway, not in the app |
-| A real UI | one static page renders a trace, which is all the story needs |
-
 ## Development
 
 ```bash

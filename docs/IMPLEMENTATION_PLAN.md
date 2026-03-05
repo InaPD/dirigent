@@ -790,11 +790,16 @@ the rendering itself is unverified. Check it before taking the README screenshot
 
    **Not fixed, deliberately.** There is no authentication, the rate limiter is per process,
    and anyone with a run id can read that run. All three are the scope decision this plan
-   already made: budgets and keys belong at a gateway, which is the multi-tenant move. The
-   README now says so plainly rather than leaving a reader to discover it. Rendered markdown
-   is not HTML-escaped either, because escaping in the renderer would corrupt legitimate
-   content; the one consumer in this repo escapes before rendering, and the README says any
-   other consumer must too.
+   already made: budgets and keys belong at a gateway, which is the multi-tenant move.
+   Rendered markdown is not HTML-escaped either, because escaping in the renderer would
+   corrupt legitimate content; the one consumer in this repo escapes before rendering.
+
+   None of this is in the README, by choice: it was drafted there and then cut, because the
+   public repo is a portfolio piece rather than something anyone is expected to deploy. So
+   this document is the only record of it. If that ever changes, put the no-authentication
+   warning back before anyone runs this where it can be reached, because `POST /research`
+   is open and it spends money. The caveat on rendered markdown lives in `render.py`'s own
+   docstring, which is where a consumer would look anyway.
 4. `gitleaks detect --source . --log-opts="--all"` over the full history. Only then flip the
    repo public.
 5. Save the three fixture questions and the workspace spend after the week to the README
