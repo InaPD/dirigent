@@ -154,3 +154,64 @@ async def test_healthz_is_exempt_from_the_rate_limit(client):
     limit = client.app.state.settings.rate_limit_per_min
     for _ in range(limit + 5):
         assert (await client.get("/healthz")).status_code == 200
+
+
+async def test_an_oversized_chunked_body_is_still_refused(client):
+    """A Content-Length header is whatever the client says. The bytes are what count."""
+
+    async def chunks():
+        for _ in range(40):
+            yield b"x" * 1024
+
+    r = await client.post(
+        "/research", content=chunks(), headers={"content-type": "application/json"}
+    )
+
+    assert r.status_code == 413
+    assert r.json()["error"] == "request body too large"
+
+
+async def test_an_understated_content_length_does_not_get_through(client):
+    r = await client.request(
+        "POST",
+        "/research",
+        content=b"x" * 20_000,
+        headers={"content-type": "application/json", "content-length": "10"},
+    )
+
+    assert r.status_code in (413, 422)
+
+
+async def test_a_normal_body_is_unaffected(client, store):
+    r = await client.post("/research", json={"question": GOOD_QUESTION})
+
+    assert r.status_code == 202
+
+
+@pytest.mark.parametrize(
+    "budgets",
+    [
+        {"max_searches_per_sq": 100_000},
+        {"max_tavily_credits": 10**9},
+        {"max_total_tokens": 10**12},
+        {"max_subquestions": 5_000},
+        {"max_extracts_per_sq": -1},
+    ],
+    ids=["searches", "credits", "tokens", "sub-questions", "negative"],
+)
+async def test_a_caller_cannot_raise_its_own_budget_past_the_ceiling(client, budgets):
+    """POST /research starts paid work, so the caps it accepts are bounded here."""
+    r = await client.post("/research", json={"question": GOOD_QUESTION, "budgets": budgets})
+
+    assert r.status_code == 422
+    assert r.json()["ok"] is False
+
+
+async def test_a_caller_may_still_lower_a_budget(client, store):
+    r = await client.post(
+        "/research", json={"question": GOOD_QUESTION, "budgets": {"max_subquestions": 2}}
+    )
+
+    assert r.status_code == 202
+    state = await store.load(r.json()["data"]["run_id"])
+    assert state.budgets.max_subquestions == 2

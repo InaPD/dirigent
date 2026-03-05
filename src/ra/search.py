@@ -43,6 +43,9 @@ CREDITS_PER_SEARCH = {"basic": 1, "fast": 1, "ultra-fast": 1, "advanced": 2}
 EXTRACT_URLS_PER_CREDIT = 5
 
 CACHE_TTL_S = 7 * 24 * 60 * 60
+# A timeout or an empty result set is a fact about one moment, not about the web. Caching
+# one for a week turns a blip into a week of the same wrong answer.
+FAILURE_CACHE_TTL_S = 10 * 60
 
 SearchDepth = Literal["basic", "advanced"]
 CallStatus = Literal["ok", "empty", "rate_limited", "timeout", "error"]
@@ -197,7 +200,11 @@ class Tavily:
             hits = _hits_from(body)
             if not hits:
                 status = "empty"
-            await self._store.cache_set(key, json.dumps(body), ttl_s=CACHE_TTL_S)
+            await self._store.cache_set(
+                key,
+                json.dumps(body),
+                ttl_s=CACHE_TTL_S if hits else FAILURE_CACHE_TTL_S,
+            )
 
         return SearchOutcome(
             status=status,
@@ -313,7 +320,7 @@ class Tavily:
             await self._store.cache_set(
                 f"cache:extract:{_digest(outcome.url)}",
                 json.dumps({"status": outcome.status, "content": outcome.content}),
-                ttl_s=CACHE_TTL_S,
+                ttl_s=CACHE_TTL_S if outcome.status == "full" else FAILURE_CACHE_TTL_S,
             )
         return outcomes
 

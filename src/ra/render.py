@@ -5,6 +5,12 @@ a recorded run and asserts the markdown comes out byte for byte identical. Keep 
 
 Rendering happens only after citations have been validated. Nothing here checks anything;
 by the time a report reaches this module every finding id in it is known to exist.
+
+The output is markdown, and it contains text a model wrote after reading web pages it was
+sent to. Treat it as untrusted. Anything that turns it into HTML must escape or sanitise it
+first, because most markdown renderers pass inline HTML straight through. `demo/trace.html`
+escapes before rendering, and so should anything else. Escaping here instead would corrupt
+legitimate content and would make the report markdown wrong rather than safe.
 """
 
 from ra.schemas import Finding, Report

@@ -447,3 +447,40 @@ async def test_extract_entries_without_a_url_are_ignored(tavily: Tavily):
 async def test_the_client_can_be_closed(store):
     tavily = Tavily("tvly-test", store)
     await tavily.aclose()
+
+
+@respx.mock
+async def test_a_failed_extraction_is_not_cached_for_a_week(tavily: Tavily, store):
+    """A blip must not become a week of the same wrong answer."""
+    from ra.search import CACHE_TTL_S, FAILURE_CACHE_TTL_S, _digest
+
+    respx.post(EXTRACT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [{"url": "https://good.test", "raw_content": LONG_BODY}],
+                "failed_results": [{"url": "https://bad.test", "error": "timeout"}],
+            },
+        )
+    )
+
+    await tavily.extract(["https://good.test", "https://bad.test"])
+
+    good_ttl = await store.client.ttl(f"cache:extract:{_digest('https://good.test')}")
+    bad_ttl = await store.client.ttl(f"cache:extract:{_digest('https://bad.test')}")
+
+    assert good_ttl > FAILURE_CACHE_TTL_S
+    assert 0 < bad_ttl <= FAILURE_CACHE_TTL_S
+    assert good_ttl <= CACHE_TTL_S
+
+
+@respx.mock
+async def test_an_empty_search_is_not_cached_for_a_week(tavily: Tavily, store):
+    from ra.search import FAILURE_CACHE_TTL_S, _digest
+
+    respx.post(SEARCH_URL).mock(return_value=httpx.Response(200, json=search_body([])))
+
+    await tavily.search("nothing matches this")
+
+    ttl = await store.client.ttl(f"cache:search:{_digest('nothing matches this', 'basic', 5)}")
+    assert 0 < ttl <= FAILURE_CACHE_TTL_S

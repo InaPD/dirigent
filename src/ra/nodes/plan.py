@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from ra.clock import now
 from ra.deps import Deps
+from ra.errors import safe_detail
 from ra.ids import sq_id
 from ra.llm import LLMError
 from ra.schemas import NodeOutcome, RunState, SubQuestion
@@ -41,11 +42,11 @@ async def plan(state: RunState, deps: Deps) -> NodeOutcome:
             schema=PlanDraft,
         )
     except LLMError as exc:
-        return _unplannable(state, f"planner failed: {exc}")
+        return _unplannable(state, f"planner failed: {safe_detail(exc)}")
     except Exception as exc:
         # Deliberately broad. Without a plan the router sends the run straight back here, so
         # anything at all that stops a plan being made has to stop the run too.
-        return _unplannable(state, f"planner failed: {type(exc).__name__}: {exc}")
+        return _unplannable(state, f"planner failed: {safe_detail(exc)}")
 
     texts = [t.strip() for t in result.parsed.sub_questions if t and t.strip()][:limit]
     if not texts:

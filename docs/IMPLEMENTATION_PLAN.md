@@ -763,10 +763,38 @@ the rendering itself is unverified. Check it before taking the README screenshot
    must be green before anything else.
 2. README per the skeleton in the source plan. Paste a verbatim trace excerpt from a
    fixture, 8 to 10 rows.
-3. Hardening pass, one hour: run the `security-reviewer` and `python-reviewer` agents on
-   `src/ra`, fix CRITICAL and HIGH. Expected items: response envelope on every error path,
-   no secrets in logs (`SecretStr` covers config; grep for `api_key` in log calls), request
-   body size limit on `POST /research`.
+3. Hardening pass: run the `security-reviewer` and `python-reviewer` agents on `src/ra`,
+   fix CRITICAL and HIGH. The three items this plan predicted were already in place. What
+   the reviews actually found, and what was done about it:
+
+   **Fixed, both critical.** A caller could raise their own budgets without limit, and the
+   research node's search loop never consulted them: `check_budgets` runs between nodes, so
+   a loop inside one could outspend the run before the router looked again. Every `Budgets`
+   field is now bounded at the boundary, and the loop checks the run's caps between searches.
+   Separately, losing the lease stopped the heartbeat but not the work: since `save` is an
+   unconditional write, a worker that stalled past its TTL and woke up would overwrite its
+   replacement, interleaving steps and double-counting spend. The work is now raced against
+   the lease and cancelled when the lease is lost.
+
+   **Fixed, high and medium.** The body size limit trusted a header, so a chunked request
+   walked past it; it now counts the bytes that arrive. The researcher and the writer caught
+   only `LLMError`, so a transport failure escaped the node and the tracing wrapper rebuilt
+   the outcome from the pre-node state, losing Tavily credits already spent; both now catch
+   broadly and keep their accounting. Failed and empty cache entries were kept for seven days
+   like successes, turning a blip into a week of the same wrong answer; they now expire in
+   ten minutes. Error text stored on a run is redacted, so a connection string or a key
+   inside an exception cannot reach whoever can read the run. A source URL must be http or
+   https before it can become a citation. The Anthropic client is closed on shutdown, the
+   API lifespan no longer strands Redis if the queue pool fails to open, and the rate
+   limiter evicts idle buckets instead of keeping one per address forever.
+
+   **Not fixed, deliberately.** There is no authentication, the rate limiter is per process,
+   and anyone with a run id can read that run. All three are the scope decision this plan
+   already made: budgets and keys belong at a gateway, which is the multi-tenant move. The
+   README now says so plainly rather than leaving a reader to discover it. Rendered markdown
+   is not HTML-escaped either, because escaping in the renderer would corrupt legitimate
+   content; the one consumer in this repo escapes before rendering, and the README says any
+   other consumer must too.
 4. `gitleaks detect --source . --log-opts="--all"` over the full history. Only then flip the
    repo public.
 5. Save the three fixture questions and the workspace spend after the week to the README

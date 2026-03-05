@@ -9,11 +9,25 @@ Nothing in here mutates. Nodes build a new state with state.model_copy(update=..
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ra.clock import now
 
 ExtractionStatus = Literal["full", "snippet_only", "paywalled", "timeout", "error"]
+
+HTTP_SCHEMES = ("http://", "https://")
+
+
+def is_http_url(url: str) -> bool:
+    """Only http(s) may become provenance.
+
+    A source URL is chosen by a model from search results and ends up as a link in the
+    rendered report. Anything else, a file: path or a javascript: URI, has no business
+    being there whoever put it in front of us.
+    """
+    return isinstance(url, str) and url.startswith(HTTP_SCHEMES)
+
+
 StepStatus = Literal["ok", "error", "skipped", "budget_exceeded"]
 SubQuestionStatus = Literal["pending", "answered", "needs_one_more_pass", "unanswerable"]
 RunStatus = Literal["queued", "running", "done", "failed", "budget_exceeded"]
@@ -35,6 +49,13 @@ class Finding(BaseModel):
     snippet: str
     retrieved_at: datetime
     extraction_status: ExtractionStatus
+
+    @field_validator("source_url")
+    @classmethod
+    def _must_be_http(cls, v: str) -> str:
+        if not is_http_url(v):
+            raise ValueError(f"source_url must be http or https, got {v[:40]!r}")
+        return v
 
 
 class ToolCall(BaseModel):
@@ -91,15 +112,23 @@ class Report(BaseModel):
 
 
 class Budgets(BaseModel):
-    max_subquestions: int = 4
-    max_searches_per_sq: int = 3
-    max_extracts_per_sq: int = 5
-    max_revisions: int = 1
-    max_total_tokens: int = 150_000
+    """Per-run caps. A caller may lower these; the ceilings are not negotiable.
+
+    POST /research takes budgets from the request body, and that endpoint starts paid work.
+    Without an upper bound a caller could ask for a hundred thousand searches, which the
+    per-run token and credit caps would not catch in time because they are only evaluated
+    between nodes. So every field is bounded here, at the boundary, where the value arrives.
+    """
+
+    max_subquestions: int = Field(4, ge=1, le=10)
+    max_searches_per_sq: int = Field(3, ge=1, le=5)
+    max_extracts_per_sq: int = Field(5, ge=1, le=10)
+    max_revisions: int = Field(1, ge=0, le=3)
+    max_total_tokens: int = Field(150_000, ge=0, le=2_000_000)
     # Always leave room for one write pass, so a tripped cap still produces a report.
-    writer_reserve_tokens: int = 20_000
-    max_wall_clock_s: int = 300
-    max_tavily_credits: int = 20
+    writer_reserve_tokens: int = Field(20_000, ge=0, le=200_000)
+    max_wall_clock_s: int = Field(300, ge=0, le=1_800)
+    max_tavily_credits: int = Field(20, ge=0, le=200)
 
 
 class RunState(BaseModel):

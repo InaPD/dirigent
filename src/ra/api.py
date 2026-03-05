@@ -13,7 +13,7 @@ from pydantic import BaseModel, field_validator
 from ra.config import get_settings
 from ra.envelope import fail, ok
 from ra.ids import new_run_id
-from ra.ratelimit import RateLimitMiddleware
+from ra.ratelimit import BodySizeLimitMiddleware, RateLimitMiddleware
 from ra.schemas import Budgets, RunState
 from ra.store import RunStore, make_redis
 from ra.worker import enqueue_run
@@ -43,25 +43,27 @@ class ResearchRequest(BaseModel):
 async def lifespan(app: FastAPI):
     settings = get_settings()
     redis = make_redis(settings.redis_url)
-    app.state.settings = settings
-    app.state.redis = redis
-    app.state.store = RunStore(redis, lease_ttl_s=settings.lease_ttl_s)
-    app.state.pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    pool = None
     try:
+        # Inside the try from here on, so a pool that fails to open does not strand redis.
+        pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+        app.state.settings = settings
+        app.state.redis = redis
+        app.state.store = RunStore(redis, lease_ttl_s=settings.lease_ttl_s)
+        app.state.pool = pool
         yield
     finally:
-        await app.state.pool.aclose()
+        if pool is not None:
+            await pool.aclose()
         await redis.aclose()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Research Agent", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(
-        RateLimitMiddleware,
-        per_minute=settings.rate_limit_per_min,
-        max_body_bytes=settings.max_request_bytes,
-    )
+    app.add_middleware(RateLimitMiddleware, per_minute=settings.rate_limit_per_min)
+    # Outermost, so an oversized body is refused before anything tries to parse it.
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException):
@@ -86,7 +88,8 @@ def create_app() -> FastAPI:
         try:
             await request.app.state.redis.ping()
             redis_up = True
-        except Exception:
+        except Exception as exc:
+            log.warning("healthz could not reach redis: %s", exc)
             redis_up = False
         return JSONResponse(
             status_code=200 if redis_up else 503,

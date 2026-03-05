@@ -104,7 +104,7 @@ async def test_a_question_cannot_be_researched_more_than_twice(deps):
     d = build(deps, verdicts(("sq_01", "needs_one_more_pass")))
     state = a_state(
         plan=[SubQuestion(id="sq_01", text="first", status="answered", passes=MAX_PASSES)],
-        budgets=Budgets(max_revisions=5),
+        budgets=Budgets(max_revisions=3),
     )
 
     outcome = await review(state, d)

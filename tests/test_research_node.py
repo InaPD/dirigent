@@ -316,3 +316,46 @@ async def test_an_empty_reworded_query_ends_the_search(deps):
     await research(a_state(budgets=Budgets(max_searches_per_sq=3)), d)
 
     assert len(d.search.queries) == 1
+
+
+async def test_a_transport_failure_keeps_the_credits_already_spent(deps):
+    """The tracing wrapper rebuilds a failed node from the state as it was before the node.
+
+    So a raw SDK exception escaping this node would take the Tavily spend with it, and the
+    run's own accounting would under-report what it actually cost.
+    """
+
+    class TransportFailure(FakeLLM):
+        async def structured(self, **kwargs):
+            raise ConnectionError("the connection dropped")
+
+    d = build(
+        deps,
+        llm=TransportFailure(),
+        searches=[search_outcome(A, credits=2)],
+        batches=[extract_batch({A: "full"}, credits=3)],
+    )
+
+    outcome = await research(a_state(tavily_credits=1), d)
+
+    assert outcome.status == "error"
+    assert "ConnectionError" in outcome.error
+    assert outcome.state.tavily_credits == 6  # 1 already on the run, plus 2 and 3 just spent
+    assert sum(c.credits for c in outcome.tool_calls) == 5
+    assert outcome.state.plan[0].status == "unanswerable"
+
+
+async def test_the_search_loop_stops_when_the_run_is_out_of_credits(deps):
+    """check_budgets only runs between nodes, so the loop inside one watches its own spend."""
+    llm = FakeLLM({Rephrased: [Rephrased(query="another go")], FindingDrafts: [drafts(("c", A))]})
+    d = build(
+        deps,
+        llm=llm,
+        searches=[search_outcome(status="ok", credits=10)],  # empty results, so it would retry
+    )
+    state = a_state(budgets=Budgets(max_searches_per_sq=5, max_tavily_credits=12), tavily_credits=0)
+
+    outcome = await research(state, d)
+
+    assert len(d.search.queries) == 2  # the second search blew the cap, so no third
+    assert "out of budget" in outcome.note

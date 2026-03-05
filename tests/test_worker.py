@@ -282,3 +282,77 @@ async def test_shutdown_closes_the_search_client(deps):
     await on_shutdown(ctx)
 
     assert search.closed is True
+
+
+# -- losing the lease ----------------------------------------------------------
+
+
+async def test_losing_the_lease_stops_the_work(deps):
+    """A superseded worker must not keep writing over its replacement.
+
+    save() is an unconditional write with no fencing, so a worker that stalled past its TTL
+    and then woke up would overwrite whatever the replacement had already done. Losing the
+    lease therefore cancels the work rather than merely stopping the heartbeat.
+    """
+    import asyncio
+
+    from ra.worker import run_graph
+
+    store = deps.store
+    state = make_state(status="queued")
+    await store.save(state)
+
+    writes: list[str] = []
+
+    class SlowGraph:
+        """Runs forever, recording every write it manages to get in."""
+
+        async def ainvoke(self, *_args, **_kwargs):
+            while True:
+                writes.append("write")
+                await store.save(state)
+                await asyncio.sleep(0.05)
+
+    ctx = {"store": store, "worker_id": "worker-a", "graph": SlowGraph()}
+    task = asyncio.create_task(run_graph(ctx, state.run_id))
+
+    # let it get going, then hand the run to somebody else
+    await asyncio.sleep(0.3)
+    await store.release_lease(state.run_id, "worker-a")
+    await store.acquire_lease(state.run_id, "worker-b")
+    during_handover = len(writes)
+
+    await asyncio.wait_for(task, timeout=10)
+    after = len(writes)
+
+    assert after >= during_handover
+    assert task.done()
+    # and it stopped: no further writes once the run_graph call returned
+    await asyncio.sleep(0.2)
+    assert len(writes) == after
+    assert await store.lease_holder(state.run_id) == "worker-b"
+
+
+async def test_a_worker_that_keeps_its_lease_runs_to_completion(deps):
+    """The other half of the same mechanism: a healthy run is not cancelled."""
+    import asyncio
+
+    import ra.nodes.canned as canned
+    from ra.graph import build_graph
+    from ra.worker import run_graph
+
+    canned_delay = canned.NODE_DELAY_S
+    canned.NODE_DELAY_S = 0
+    try:
+        store = deps.store
+        state = make_state(status="queued")
+        await store.save(state)
+        ctx = {"store": store, "worker_id": "worker-a", "graph": build_graph(deps)}
+
+        await asyncio.wait_for(run_graph(ctx, state.run_id), timeout=15)
+    finally:
+        canned.NODE_DELAY_S = canned_delay
+
+    final = await store.load(state.run_id)
+    assert final.status == "done"
+    assert final.report_markdown

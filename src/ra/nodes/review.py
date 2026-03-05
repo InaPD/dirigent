@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from ra.deps import Deps
-from ra.llm import LLMError
+from ra.errors import safe_detail
 from ra.schemas import NodeOutcome, RunState, SubQuestion
 
 log = logging.getLogger("ra.nodes.review")
@@ -54,7 +54,7 @@ async def review(state: RunState, deps: Deps) -> NodeOutcome:
         # Never block the writer on a broken reviewer. Mark the plan reviewed so the run
         # progresses, and let the trace carry the reason it was not properly checked.
         log.warning("run %s could not be reviewed: %s", state.run_id, exc)
-        detail = str(exc) if isinstance(exc, LLMError) else f"{type(exc).__name__}: {exc}"
+        detail = safe_detail(exc)
         return NodeOutcome(
             state=state.model_copy(update={"reviewed": True}),
             status="error",

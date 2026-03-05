@@ -75,6 +75,10 @@ class LLM:
     def __init__(self, client: AsyncAnthropic) -> None:
         self._client = client
 
+    async def aclose(self) -> None:
+        """Release the underlying http session, as the search client does."""
+        await self._client.close()
+
     @classmethod
     def from_api_key(cls, api_key: str) -> "LLM":
         # max_retries is the SDK default of 2, which covers 429 and 5xx. Do not add another

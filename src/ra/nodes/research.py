@@ -14,8 +14,9 @@ from pydantic import BaseModel, Field
 
 from ra.clock import now
 from ra.deps import Deps
+from ra.errors import safe_detail
 from ra.ids import new_finding_id
-from ra.llm import LLMError, add_usage
+from ra.llm import add_usage
 from ra.routing import next_open_subquestion
 from ra.schemas import Finding, NodeOutcome, RunState, ToolCall
 from ra.search import Hit, resolve_extraction
@@ -114,7 +115,12 @@ async def research(state: RunState, deps: Deps) -> NodeOutcome:
             user=_extraction_prompt(sq.text, usable),
             schema=FindingDrafts,
         )
-    except LLMError as exc:
+    except Exception as exc:
+        # Deliberately broad. LLM.structured only wraps refusals and truncation in LLMError;
+        # a timeout or an exhausted retry comes out as the SDK's own type. If either escaped
+        # this node, the tracing wrapper would rebuild the outcome from the state as it was
+        # before the node ran, and the Tavily credits already spent above would vanish from
+        # the run's accounting.
         return _settled(
             state,
             sq,
@@ -124,7 +130,7 @@ async def research(state: RunState, deps: Deps) -> NodeOutcome:
             model=deps.settings.models.researcher,
             status="error",
             note="; ".join(notes) or None,
-            error=str(exc),
+            error=safe_detail(exc),
         )
 
     quality = {hit.url: (status, hit) for hit, status, _ in usable}
@@ -144,6 +150,25 @@ async def research(state: RunState, deps: Deps) -> NodeOutcome:
     )
 
 
+def _run_out_of_budget(state: RunState, tool_calls, usage) -> bool:
+    """Would carrying on inside this node break a cap the run already has?
+
+    check_budgets only runs between nodes, so a loop inside one can outspend the run's caps
+    before the router gets another look. This is that same check, applied to spend so far
+    plus what this node has run up in flight.
+    """
+    credits = state.tavily_credits + sum(call.credits for call in tool_calls)
+    tokens = state.tokens_in + state.tokens_out
+    if usage is not None:
+        tokens += usage.input_tokens + usage.output_tokens
+
+    budgets = state.budgets
+    return (
+        credits >= budgets.max_tavily_credits
+        or tokens + budgets.writer_reserve_tokens > budgets.max_total_tokens
+    )
+
+
 async def _gather_hits(question, state, deps, tool_calls, notes):
     """Search, and rewrite the query once if the first attempt comes back thin."""
     usage = None
@@ -152,6 +177,10 @@ async def _gather_hits(question, state, deps, tool_calls, notes):
     query = question
 
     while searches_left > 0:
+        if _run_out_of_budget(state, tool_calls, usage):
+            notes.append("stopped searching: out of budget")
+            break
+
         outcome = await deps.search.search(query, max_results=state.budgets.max_extracts_per_sq)
         searches_left -= 1
         tool_calls.append(outcome.tool_call)
@@ -170,7 +199,8 @@ async def _gather_hits(question, state, deps, tool_calls, notes):
                 user=f"This query returned {len(hits)} results: {query}",
                 schema=Rephrased,
             )
-        except LLMError:
+        except Exception:
+            # Any failure here just ends the search. What was already spent is kept.
             break
         usage = add_usage(usage, rewrite.usage)
         query = rewrite.parsed.query.strip()

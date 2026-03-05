@@ -15,6 +15,7 @@ from time import perf_counter
 
 from ra.clock import now
 from ra.deps import Deps
+from ra.errors import safe_detail
 from ra.pricing import cost_usd
 from ra.schemas import NodeOutcome, RunState, StepRecord
 
@@ -24,7 +25,6 @@ NodeFn = Callable[[RunState, Deps], Awaitable[NodeOutcome]]
 TracedFn = Callable[[RunState, Deps], Awaitable[RunState]]
 
 DIGEST_LEN = 12
-ERROR_LEN = 500
 
 
 def digest(state: RunState) -> str:
@@ -62,7 +62,7 @@ def traced(node: str) -> Callable[[NodeFn], TracedFn]:
                 outcome = await fn(state, deps)
             except Exception as exc:  # a node bug must not kill the run
                 log.exception("node %s failed on run %s", node, state.run_id)
-                outcome = NodeOutcome(state=state, status="error", error=repr(exc)[:ERROR_LEN])
+                outcome = NodeOutcome(state=state, status="error", error=safe_detail(exc))
 
             duration_ms = int((perf_counter() - t0) * 1000)
             new_state = outcome.state

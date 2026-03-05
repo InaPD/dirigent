@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 
 from ra.clock import now
 from ra.deps import Deps
-from ra.llm import LLMError, add_usage
+from ra.errors import safe_detail
+from ra.llm import add_usage
 from ra.render import render_markdown
 from ra.schemas import Claim, Finding, NodeOutcome, Report, RunState, Section
 
@@ -87,8 +88,10 @@ async def write(state: RunState, deps: Deps) -> NodeOutcome:
             result = await deps.llm.structured(
                 model=model, system=WRITER_SYSTEM, user=prompt, schema=ReportDraft
             )
-        except LLMError as exc:
-            return _failed(state, f"writer failed: {exc}", usage=usage, model=model)
+        except Exception as exc:
+            # Broad for the same reason as the researcher: a transport failure is not an
+            # LLMError, and the usage already spent on a first attempt must be kept.
+            return _failed(state, f"writer failed: {safe_detail(exc)}", usage=usage, model=model)
 
         usage = add_usage(usage, result.usage)
         problems = validate_citations(result.parsed, state.findings)

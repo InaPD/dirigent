@@ -14,6 +14,7 @@ from arq.connections import ArqRedis, RedisSettings
 from ra.clock import now
 from ra.config import get_settings
 from ra.deps import Deps
+from ra.errors import safe_detail
 from ra.graph import RECURSION_LIMIT, build_graph
 from ra.llm import LLM
 from ra.schemas import RunState
@@ -21,8 +22,6 @@ from ra.search import Tavily
 from ra.store import RunStore, make_redis
 
 log = logging.getLogger("ra.worker")
-
-ERROR_LEN = 500
 
 
 def job_id(state: RunState) -> str:
@@ -63,7 +62,7 @@ async def run_graph(ctx: dict, run_id: str) -> None:
         log.info("run %s already leased, skipping", run_id)
         return
 
-    heartbeat = asyncio.create_task(_hold_lease(store, run_id, worker_id))
+    heartbeat: asyncio.Task | None = None
     try:
         state = await store.load(run_id)
         if state is None:
@@ -82,28 +81,47 @@ async def run_graph(ctx: dict, run_id: str) -> None:
         )
         await store.save(state)
 
-        try:
-            await ctx["graph"].ainvoke(
-                state.model_dump(), config={"recursion_limit": RECURSION_LIMIT}
-            )
-        except Exception as exc:
+        # Race the work against the lease. Whichever finishes first decides what happens.
+        #
+        # The heartbeat only finishes early when a refresh fails, which means another worker
+        # now owns this run. Carrying on would be worse than stopping: save() is an
+        # unconditional write, so a worker that stalled past its TTL and then woke up would
+        # overwrite whatever its replacement had already done, interleaving steps and
+        # double-counting spend. So losing the lease cancels the work.
+        heartbeat = asyncio.create_task(_hold_lease(store, run_id, worker_id))
+        work = asyncio.create_task(
+            ctx["graph"].ainvoke(state.model_dump(), config={"recursion_limit": RECURSION_LIMIT})
+        )
+        done, _ = await asyncio.wait({heartbeat, work}, return_when=asyncio.FIRST_COMPLETED)
+
+        if work not in done:
+            log.warning("run %s was taken over by another worker, abandoning it", run_id)
+            work.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await work
+            return
+
+        failure = work.exception()
+        if failure is not None:
             # A node failure is recorded as a step and never reaches here. This is a
             # graph-level failure: recursion limit, state validation, a broken Redis.
-            log.exception("run %s failed", run_id)
+            log.error("run %s failed: %s", run_id, safe_detail(failure))
             latest = await store.load(run_id) or state
             await store.save(
                 latest.model_copy(
                     update={
                         "status": "failed",
-                        "error": repr(exc)[:ERROR_LEN],
+                        "error": safe_detail(failure),
                         "finished_at": now(),
                     }
                 )
             )
     finally:
-        heartbeat.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await heartbeat
+        if heartbeat is not None:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
+        # Compare-and-act, so this is a no-op if the lease is already someone else's.
         await store.release_lease(run_id, worker_id)
 
 
@@ -172,8 +190,10 @@ async def on_startup(ctx: dict) -> None:
 
 async def on_shutdown(ctx: dict) -> None:
     deps = ctx.get("deps")
-    if deps is not None and deps.search is not None:
-        await deps.search.aclose()
+    if deps is not None:
+        for client in (deps.search, deps.llm):
+            if client is not None:
+                await client.aclose()
     for key in ("redis", "pool"):
         client = ctx.get(key)
         if client is not None:

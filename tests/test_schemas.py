@@ -66,3 +66,40 @@ def test_is_terminal():
     assert make_state(status="budget_exceeded").is_terminal
     assert not make_state(status="running").is_terminal
     assert not make_state(status="queued").is_terminal
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,<script>", "ftp://x.test/a"],
+)
+def test_a_finding_cannot_carry_a_non_http_source(url):
+    """A source url becomes a link in the rendered report, so the scheme is not negotiable."""
+    with pytest.raises(ValueError, match="http"):
+        make_finding(source_url=url)
+
+
+@pytest.mark.parametrize("url", ["http://a.test/x", "https://b.test/y?q=1"])
+def test_http_sources_are_accepted(url):
+    assert make_finding(source_url=url).source_url == url
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("max_searches_per_sq", 100_000),
+        ("max_tavily_credits", 10**9),
+        ("max_total_tokens", 10**12),
+        ("max_subquestions", 5_000),
+        ("max_extracts_per_sq", 0),
+        ("max_revisions", -1),
+        ("max_wall_clock_s", 10**6),
+    ],
+)
+def test_a_budget_beyond_the_ceiling_is_refused(field, value):
+    """POST /research takes these from the request body and they start paid work."""
+    with pytest.raises(ValueError):
+        Budgets(**{field: value})
+
+
+def test_the_defaults_are_inside_their_own_ceilings():
+    assert Budgets() == Budgets.model_validate(Budgets().model_dump())
