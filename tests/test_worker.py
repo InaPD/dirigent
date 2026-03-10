@@ -19,9 +19,19 @@ def no_sleeping(monkeypatch):
     monkeypatch.setattr(canned, "NODE_DELAY_S", 0)
 
 
+def worker_ctx(deps: Deps, graph, worker_id: str = "worker-a") -> dict:
+    """The same shape on_startup builds, so the tests exercise the real lookups."""
+    return {
+        "store": deps.store,
+        "settings": deps.settings,
+        "worker_id": worker_id,
+        "graph": graph,
+    }
+
+
 @pytest.fixture
 def ctx(deps: Deps):
-    return {"store": deps.store, "worker_id": "worker-a", "graph": build_graph(deps)}
+    return worker_ctx(deps, build_graph(deps))
 
 
 class ExplodingGraph:
@@ -89,7 +99,7 @@ async def test_a_graph_level_failure_is_recorded_and_the_lease_released(deps):
     store = deps.store
     state = make_state(status="queued")
     await store.save(state)
-    ctx = {"store": store, "worker_id": "worker-a", "graph": ExplodingGraph()}
+    ctx = worker_ctx(deps, ExplodingGraph())
 
     await run_graph(ctx, state.run_id)
 
@@ -111,7 +121,7 @@ async def test_the_lease_is_released_even_when_loading_fails(deps, monkeypatch):
         raise ConnectionError("redis went away")
 
     monkeypatch.setattr(store, "load", broken_load)
-    ctx = {"store": store, "worker_id": "worker-a", "graph": build_graph(deps)}
+    ctx = worker_ctx(deps, build_graph(deps))
 
     with pytest.raises(ConnectionError):
         await run_graph(ctx, state.run_id)
@@ -140,7 +150,12 @@ def test_build_deps_builds_the_model_client_when_a_key_is_set():
 
 @pytest.fixture
 def sweep_ctx(deps):
-    return {"store": deps.store, "pool": FakePool(), "worker_id": "worker-sweeper"}
+    return {
+        "store": deps.store,
+        "settings": deps.settings,
+        "pool": FakePool(),
+        "worker_id": "worker-sweeper",
+    }
 
 
 async def test_an_orphaned_run_is_re_enqueued(sweep_ctx):
@@ -313,7 +328,7 @@ async def test_losing_the_lease_stops_the_work(deps):
                 await store.save(state)
                 await asyncio.sleep(0.05)
 
-    ctx = {"store": store, "worker_id": "worker-a", "graph": SlowGraph()}
+    ctx = worker_ctx(deps, SlowGraph())
     task = asyncio.create_task(run_graph(ctx, state.run_id))
 
     # let it get going, then hand the run to somebody else
@@ -347,11 +362,63 @@ async def test_a_worker_that_keeps_its_lease_runs_to_completion(deps):
         store = deps.store
         state = make_state(status="queued")
         await store.save(state)
-        ctx = {"store": store, "worker_id": "worker-a", "graph": build_graph(deps)}
+        ctx = worker_ctx(deps, build_graph(deps))
 
         await asyncio.wait_for(run_graph(ctx, state.run_id), timeout=15)
     finally:
         canned.NODE_DELAY_S = canned_delay
+
+    final = await store.load(state.run_id)
+    assert final.status == "done"
+    assert final.report_markdown
+
+
+async def test_a_run_that_keeps_killing_workers_is_not_fed_back_in(sweep_ctx):
+    """Otherwise the sweeper is a loop: worker dies, run requeued, worker dies."""
+    from ra.worker import sweep
+
+    store = sweep_ctx["store"]
+    limit = sweep_ctx["settings"].max_attempts
+    state = make_state(status="running", attempt=limit)
+    await store.save(state)
+
+    await sweep(sweep_ctx)
+
+    assert sweep_ctx["pool"].jobs == []
+    final = await store.load(state.run_id)
+    assert final.status == "failed"
+    assert "did not survive a worker" in final.error
+    assert final.steps[-1].node == "abandoned"
+    # and it is out of the active set, so no later sweep looks at it again
+    assert await store.active_runs() == set()
+
+
+async def test_a_run_with_attempts_left_is_still_re_enqueued(sweep_ctx):
+    from ra.worker import sweep
+
+    store = sweep_ctx["store"]
+    limit = sweep_ctx["settings"].max_attempts
+    state = make_state(status="running", attempt=limit - 1)
+    await store.save(state)
+
+    await sweep(sweep_ctx)
+
+    assert len(sweep_ctx["pool"].jobs) == 1
+    assert (await store.load(state.run_id)).attempt == limit
+
+
+async def test_a_run_at_the_ceiling_still_gets_the_attempt_it_was_granted(ctx):
+    """The count is enforced in the sweeper only, and this is why.
+
+    The sweeper bumps the count to the ceiling and then enqueues, so a worker that also
+    refused to run at the ceiling would discard the attempt the sweeper had just granted.
+    That is an off-by-one dressed up as defence in depth.
+    """
+    store = ctx["store"]
+    state = make_state(status="queued", attempt=ctx["settings"].max_attempts)
+    await store.save(state)
+
+    await run_graph(ctx, state.run_id)
 
     final = await store.load(state.run_id)
     assert final.status == "done"

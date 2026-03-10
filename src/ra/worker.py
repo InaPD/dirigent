@@ -17,6 +17,7 @@ from ra.deps import Deps
 from ra.errors import safe_detail
 from ra.graph import RECURSION_LIMIT, build_graph
 from ra.llm import LLM
+from ra.progress import apply_abandoned, is_exhausted
 from ra.schemas import RunState
 from ra.search import Tavily
 from ra.store import RunStore, make_redis
@@ -141,6 +142,17 @@ async def sweep(ctx: dict) -> None:
             await store.forget_active(run_id)
             continue
         if await store.lease_holder(run_id) is not None:
+            continue
+
+        if is_exhausted(state, ctx["settings"].max_attempts):
+            # Putting this back would start the same cycle again. The run is the problem.
+            #
+            # This is the only place the count is enforced, on purpose. An earlier version
+            # also checked it in run_graph, which looked like belt and braces and was really
+            # an off-by-one: the sweeper bumps the count to the ceiling, so a worker that
+            # refused to run at the ceiling threw away the very attempt the sweeper had just
+            # granted. One guard, at the point that does the re-enqueueing.
+            await store.save(apply_abandoned(state))
             continue
 
         bumped = state.model_copy(update={"attempt": state.attempt + 1})

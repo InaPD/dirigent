@@ -809,6 +809,22 @@ the rendering itself is unverified. Check it before taking the README screenshot
 
 ## Cross-cutting notes
 
+**The re-enqueue guard (`progress.py`).** Not in the original plan; it came out of a review
+of the finished system. The sweeper puts a run back on the queue whenever its worker
+disappears, which is right when the worker died for its own reasons and wrong when the run
+is what killed it. An out-of-memory kill, or a crash in a dependency on one particular
+document, repeats: worker dies, run is re-enqueued, worker dies. `attempt` was incremented
+on every re-enqueue and never read back, so that cycle was unbounded, and because the run
+document outlives every worker it would have survived restarts and deploys.
+
+A run now gets `max_attempts` re-enqueues (3 by default, `RA_MAX_ATTEMPTS`) and is then
+failed, with the count and the last step it reached in the trace. Enforced in the sweeper
+and nowhere else: an earlier version also checked it in `run_graph`, which read like belt
+and braces and was really an off-by-one, since the sweeper bumps the count to the ceiling
+and a worker refusing to run at the ceiling throws away the attempt just granted.
+`test_a_run_that_keeps_killing_workers_is_abandoned` kills a real worker at the gate on
+every attempt and asserts the run stops rather than cycling.
+
 **The stall guard (`progress.py`).** The router deriving the next node from state is what
 makes resume trivial, and it is also what makes a failing node loop: a node that errors
 without changing anything gets sent straight back in. So if the last three steps are all

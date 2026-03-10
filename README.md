@@ -115,6 +115,12 @@ The heartbeat matters as much as the sweeper. A node can legitimately outlive th
 a background task refreshes it while the graph runs. Without that, the sweeper would
 re-enqueue runs that are perfectly healthy and merely slow.
 
+Resuming is right when the worker died for its own reasons and wrong when the run is the
+reason it died. The two look identical from outside, so a run gets three re-enqueues and is
+then abandoned, with the count and the last step it reached written into the trace. Without
+that limit a run that takes its worker down with it would cycle forever, and because the run
+document outlives every worker, that cycle would survive restarts and deploys.
+
 [`tests/test_resume_after_kill.py`](tests/test_resume_after_kill.py) is the proof. It starts
 two real worker processes against a real Redis and a real queue, and sends a real `SIGKILL`
 at the exact moment one sub-question is finished and the next is in flight. It then asserts

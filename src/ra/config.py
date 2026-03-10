@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     sweeper_interval_s: int = Field(
         default=30, validation_alias=AliasChoices("RA_SWEEP_SECONDS", "sweeper_interval_s")
     )
+    # How many times a run may go back on the queue after its worker died. Enough to ride
+    # out a deploy or a lost spot instance, few enough that a run which keeps killing its
+    # worker stops rather than cycling forever.
+    max_attempts: int = Field(
+        default=3, ge=1, le=10, validation_alias=AliasChoices("RA_MAX_ATTEMPTS", "max_attempts")
+    )
     stub: str | None = Field(default=None, validation_alias=AliasChoices("RA_STUB", "stub"))
     worker_id: str = Field(
         default_factory=_default_worker_id,

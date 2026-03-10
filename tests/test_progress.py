@@ -133,3 +133,43 @@ async def test_the_guard_catches_a_node_the_planner_check_would_not(deps, monkey
 def test_the_threshold_is_small_enough_to_be_cheap(limit):
     """Each stalled attempt can be a paid call, so the guard must not be generous."""
     assert limit <= 3
+
+
+# -- the re-enqueue guard ------------------------------------------------------
+
+
+def test_a_fresh_run_has_attempts_left():
+    from ra.progress import is_exhausted
+
+    assert not is_exhausted(make_state(attempt=0), 3)
+    assert not is_exhausted(make_state(attempt=2), 3)
+
+
+def test_a_run_is_exhausted_at_its_limit():
+    from ra.progress import is_exhausted
+
+    assert is_exhausted(make_state(attempt=3), 3)
+    assert is_exhausted(make_state(attempt=9), 3)
+
+
+def test_abandoning_names_the_count_and_the_last_step():
+    from ra.progress import apply_abandoned
+
+    state = make_state(attempt=3, steps=[step(1, node="research", status="ok")])
+
+    stopped = apply_abandoned(state)
+
+    assert stopped.status == "failed"
+    assert stopped.finished_at is not None
+    assert "3 re-enqueues" in stopped.error
+    assert "research" in stopped.error
+    assert stopped.steps[-1].node == "abandoned"
+
+
+def test_abandoning_a_run_that_never_got_anywhere():
+    from ra.progress import apply_abandoned
+
+    stopped = apply_abandoned(make_state(attempt=3, steps=[]))
+
+    assert stopped.status == "failed"
+    assert "none" in stopped.error
