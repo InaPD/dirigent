@@ -7,6 +7,9 @@ acting, otherwise a worker that stalled past its TTL could refresh or delete a l
 the replacement worker now holds. Both are Lua so the compare and the act are one step.
 """
 
+from collections.abc import Sequence
+from datetime import datetime
+
 from redis.asyncio import Redis
 
 from ra.schemas import RunState
@@ -30,6 +33,12 @@ end
 """
 
 ACTIVE_SET = "runs:active"
+RUN_INDEX = "runs:index"
+
+# The index is for looking back over recent runs, not for keeping them forever. Trimming it
+# bounds the one structure here that would otherwise grow for the life of the deployment.
+MAX_INDEXED_RUNS = 10_000
+
 DEFAULT_CACHE_TTL_S = 7 * 24 * 60 * 60
 
 
@@ -58,14 +67,41 @@ class RunStore:
     # -- run document -------------------------------------------------------------
 
     async def save(self, state: RunState) -> None:
-        """Write the whole run document and keep runs:active in step with its status."""
+        """Write the whole run document, and keep the two indexes in step with it.
+
+        runs:active drives the sweeper. runs:index is ordered by creation time and is what
+        lets anything ask about runs as a set rather than one at a time. Re-adding the same
+        id with the same score on every save is idempotent and costs nothing.
+        """
         pipe = self._r.pipeline()
         pipe.set(run_key(state.run_id), state.model_dump_json())
         if state.status == "running":
             pipe.sadd(ACTIVE_SET, state.run_id)
         else:
             pipe.srem(ACTIVE_SET, state.run_id)
+        pipe.zadd(RUN_INDEX, {state.run_id: state.created_at.timestamp()})
+        pipe.zremrangebyrank(RUN_INDEX, 0, -(MAX_INDEXED_RUNS + 1))
         await pipe.execute()
+
+    async def recent_run_ids(self, *, since: datetime | None = None, limit: int = 50) -> list[str]:
+        """Ids of the most recently created runs, newest first."""
+        return await self._r.zrevrangebyscore(
+            RUN_INDEX,
+            max="+inf",
+            min=since.timestamp() if since else "-inf",
+            start=0,
+            num=max(0, limit),
+        )
+
+    async def load_many(self, run_ids: Sequence[str]) -> list[RunState]:
+        """Load several runs in one round trip. Ids that have expired are skipped."""
+        if not run_ids:
+            return []
+        raw = await self._r.mget([run_key(run_id) for run_id in run_ids])
+        return [RunState.model_validate_json(item) for item in raw if item is not None]
+
+    async def indexed_run_count(self) -> int:
+        return await self._r.zcard(RUN_INDEX)
 
     async def load(self, run_id: str) -> RunState | None:
         """Return the run document, or None if there is no such run."""

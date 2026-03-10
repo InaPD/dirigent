@@ -81,6 +81,23 @@ the cost column stops being a measurement.
 
 `demo/trace.html` renders the same data as a page. `make trace` serves it.
 
+`GET /runs` answers the questions a single trace cannot: what a week cost, which node fails
+most often, and how much of what gets cited was a real page rather than a search snippet.
+
+```
+node       runs  ok  err skip budget  total ms  slowest
+research      3   6    0    0      0      6003     1002
+plan          3   3    0    0      0      3002     1002
+review        3   3    0    0      0      3000     1000
+write         3   3    0    0      0      3001     1001
+budget        1   0    0    0      1         0        0
+```
+
+Nodes sort by failures first, because the question that row answers is where things go
+wrong. Take `?hours=` and `?limit=` to move the window and `?status=` to filter. Every
+number is a total over the runs actually aggregated, which the response's `window` block
+describes, and `window.truncated` says when the limit cut it short rather than the clock.
+
 ## Budgets
 
 Every run carries its own caps, and `POST /research` can override them.

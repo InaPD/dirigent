@@ -2,19 +2,22 @@
 
 import logging
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+from ra.clock import now
 from ra.config import get_settings
 from ra.envelope import fail, ok
 from ra.ids import new_run_id
 from ra.ratelimit import BodySizeLimitMiddleware, RateLimitMiddleware
-from ra.schemas import Budgets, RunState
+from ra.schemas import Budgets, RunState, RunStatus
+from ra.stats import summarise, summarise_run
 from ra.store import RunStore, make_redis
 from ra.worker import enqueue_run
 
@@ -22,6 +25,12 @@ log = logging.getLogger("ra.api")
 
 QUESTION_MIN = 10
 QUESTION_MAX = 1000
+
+# How far back /runs looks, and how many runs it will aggregate, unless asked otherwise.
+DEFAULT_WINDOW_HOURS = 24 * 7
+MAX_WINDOW_HOURS = 24 * 90
+DEFAULT_RUN_LIMIT = 50
+MAX_RUN_LIMIT = 500
 
 
 class ResearchRequest(BaseModel):
@@ -109,6 +118,36 @@ def create_app() -> FastAPI:
         await enqueue_run(request.app.state.pool, state)
         log.info("queued run %s", state.run_id)
         return ok({"run_id": state.run_id, "status": state.status})
+
+    @app.get("/runs")
+    async def list_runs(
+        request: Request,
+        limit: int = Query(DEFAULT_RUN_LIMIT, ge=1, le=MAX_RUN_LIMIT),
+        hours: int = Query(DEFAULT_WINDOW_HOURS, ge=1, le=MAX_WINDOW_HOURS),
+        status: RunStatus | None = None,
+    ):
+        """Recent runs, with the totals across them.
+
+        Every number here is a total over the runs actually aggregated, which the `window`
+        block describes. It is not a lifetime figure, and `window.truncated` says when the
+        limit cut the window short rather than the time range.
+        """
+        store: RunStore = request.app.state.store
+        since = now() - timedelta(hours=hours)
+
+        run_ids = await store.recent_run_ids(since=since, limit=limit)
+        states = await store.load_many(run_ids)
+        truncated = len(run_ids) == limit
+        if status is not None:
+            states = [s for s in states if s.status == status]
+
+        overview = summarise(states, since=since, truncated=truncated)
+        return ok(
+            {
+                **overview.model_dump(),
+                "runs": [summarise_run(s).model_dump() for s in states],
+            }
+        )
 
     @app.get("/research/{run_id}")
     async def get_research(run_id: str, request: Request):

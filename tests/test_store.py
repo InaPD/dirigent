@@ -91,3 +91,86 @@ async def test_lease_rules_hold_on_real_redis(real_store: RunStore):
     assert await real_store.release_lease("run_r", "worker-b") is False
     assert await real_store.refresh_lease("run_r", "worker-a") is True
     assert await real_store.release_lease("run_r", "worker-a") is True
+
+
+# -- the run index -------------------------------------------------------------
+
+
+async def test_saving_a_run_indexes_it(store: RunStore):
+    state = make_state(status="queued")
+    await store.save(state)
+
+    assert await store.recent_run_ids() == [state.run_id]
+    assert await store.indexed_run_count() == 1
+
+
+async def test_the_index_is_ordered_newest_first(store: RunStore):
+    from datetime import timedelta
+
+    from ra.clock import now
+
+    base = now()
+    for i in range(3):
+        await store.save(
+            make_state(run_id=f"run_{i}", created_at=base - timedelta(hours=i), status="done")
+        )
+
+    assert await store.recent_run_ids() == ["run_0", "run_1", "run_2"]
+
+
+async def test_the_index_can_be_limited_and_windowed(store: RunStore):
+    from datetime import timedelta
+
+    from ra.clock import now
+
+    base = now()
+    for i in range(5):
+        await store.save(
+            make_state(run_id=f"run_{i}", created_at=base - timedelta(hours=i), status="done")
+        )
+
+    assert len(await store.recent_run_ids(limit=2)) == 2
+    assert len(await store.recent_run_ids(since=base - timedelta(hours=2))) == 3
+
+
+async def test_re_saving_a_run_does_not_duplicate_it(store: RunStore):
+    """save() runs after every node, so the index must be idempotent."""
+    state = make_state(status="running")
+    for _ in range(5):
+        await store.save(state)
+
+    assert await store.indexed_run_count() == 1
+
+
+async def test_the_index_is_trimmed_so_it_cannot_grow_forever(store: RunStore, monkeypatch):
+    import ra.store as mod
+
+    monkeypatch.setattr(mod, "MAX_INDEXED_RUNS", 3)
+    from datetime import timedelta
+
+    from ra.clock import now
+
+    base = now()
+    for i in range(6):
+        await store.save(
+            make_state(run_id=f"run_{i}", created_at=base + timedelta(hours=i), status="done")
+        )
+
+    assert await store.indexed_run_count() == 3
+    # the newest survive
+    assert await store.recent_run_ids() == ["run_5", "run_4", "run_3"]
+
+
+async def test_load_many_skips_ids_whose_document_is_gone(store: RunStore):
+    kept = make_state(run_id="run_kept", status="done")
+    await store.save(kept)
+    await store.save(make_state(run_id="run_gone", status="done"))
+    await store.client.delete("run:run_gone")
+
+    loaded = await store.load_many(["run_gone", "run_kept"])
+
+    assert [s.run_id for s in loaded] == ["run_kept"]
+
+
+async def test_load_many_of_nothing_makes_no_request(store: RunStore):
+    assert await store.load_many([]) == []

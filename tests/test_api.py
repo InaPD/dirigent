@@ -215,3 +215,144 @@ async def test_a_caller_may_still_lower_a_budget(client, store):
     assert r.status_code == 202
     state = await store.load(r.json()["data"]["run_id"])
     assert state.budgets.max_subquestions == 2
+
+
+# -- GET /runs -----------------------------------------------------------------
+
+
+async def seed_runs(store, count: int = 3, **overrides):
+    from datetime import timedelta
+
+    from ra.clock import now
+
+    base = now()
+    made = []
+    for i in range(count):
+        state = make_state(
+            run_id=f"run_seed{i:06d}",
+            status="done",
+            cost_usd=0.01,
+            tokens_in=100,
+            tokens_out=20,
+            tavily_credits=2,
+            created_at=base - timedelta(hours=i),
+            **overrides,
+        )
+        await store.save(state)
+        made.append(state)
+    return made
+
+
+async def test_runs_is_empty_before_anything_has_run(client):
+    body = (await client.get("/runs")).json()
+
+    assert body["ok"] is True
+    assert body["data"]["runs"] == []
+    assert body["data"]["window"]["runs"] == 0
+    assert body["data"]["spend"]["cost_usd"] == 0
+
+
+async def test_runs_lists_newest_first_with_totals(client, store):
+    await seed_runs(store, 3)
+
+    data = (await client.get("/runs")).json()["data"]
+
+    assert [r["run_id"] for r in data["runs"]] == [
+        "run_seed000000",
+        "run_seed000001",
+        "run_seed000002",
+    ]
+    assert data["window"]["runs"] == 3
+    assert data["spend"]["cost_usd"] == pytest.approx(0.03)
+    assert data["spend"]["tavily_credits"] == 6
+    assert data["by_status"] == {"done": 3}
+
+
+async def test_the_totals_describe_the_window_they_cover(client, store):
+    await seed_runs(store, 5)
+
+    data = (await client.get("/runs?limit=2")).json()["data"]
+
+    assert len(data["runs"]) == 2
+    assert data["window"]["runs"] == 2
+    assert data["window"]["truncated"] is True
+    assert data["spend"]["cost_usd"] == pytest.approx(0.02)
+
+
+async def test_the_time_window_excludes_older_runs(client, store):
+    await seed_runs(store, 5)  # one per hour going back
+
+    data = (await client.get("/runs?hours=2")).json()["data"]
+
+    assert len(data["runs"]) == 2
+    assert data["window"]["since"] is not None
+
+
+async def test_runs_can_be_filtered_by_status(client, store):
+    await seed_runs(store, 2)
+    await store.save(make_state(run_id="run_broken", status="failed", error="boom"))
+
+    data = (await client.get("/runs?status=failed")).json()["data"]
+
+    assert [r["run_id"] for r in data["runs"]] == ["run_broken"]
+    assert data["runs"][0]["error"] == "boom"
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["limit=0", "limit=501", "hours=0", "hours=99999", "status=nonsense"],
+)
+async def test_runs_rejects_nonsense_parameters(client, query):
+    r = await client.get(f"/runs?{query}")
+
+    assert r.status_code == 422
+    assert r.json()["ok"] is False
+
+
+async def test_runs_reports_where_things_go_wrong(client, store):
+    from ra.schemas import StepRecord
+
+    def step(node, status, seq=1):
+        return StepRecord(
+            seq=seq,
+            node=node,
+            started_at=make_state().created_at,
+            duration_ms=10,
+            status=status,
+            input_digest="a" * 12,
+            output_digest="b" * 12,
+        )
+
+    await store.save(
+        make_state(
+            run_id="run_withsteps",
+            status="failed",
+            steps=[step("research", "error"), step("plan", "ok", 2)],
+        )
+    )
+
+    nodes = (await client.get("/runs")).json()["data"]["nodes"]
+
+    assert nodes[0]["node"] == "research"
+    assert nodes[0]["error"] == 1
+
+
+async def test_a_posted_run_shows_up_in_the_listing(client, store):
+    posted = await client.post("/research", json={"question": GOOD_QUESTION})
+    run_id = posted.json()["data"]["run_id"]
+
+    data = (await client.get("/runs")).json()["data"]
+
+    assert run_id in [r["run_id"] for r in data["runs"]]
+    assert data["by_status"] == {"queued": 1}
+
+
+async def test_the_listing_survives_a_run_whose_document_expired(client, store):
+    """The index outlives a document only if someone deletes one, but it must not 500."""
+    await seed_runs(store, 2)
+    await store.client.delete("run:run_seed000000")
+
+    data = (await client.get("/runs")).json()["data"]
+
+    assert [r["run_id"] for r in data["runs"]] == ["run_seed000001"]
+    assert data["window"]["runs"] == 1

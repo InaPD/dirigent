@@ -809,6 +809,23 @@ the rendering itself is unverified. Check it before taking the README screenshot
 
 ## Cross-cutting notes
 
+**Runs as a set (`stats.py`, `GET /runs`).** Not in the original plan; it came out of the
+same review. Every run was individually legible through its trace and the set of runs was
+opaque, which is an odd gap in a project whose pitch is knowing what it did. You could not
+ask what a week cost, which node fails most often, or whether weak sources correlate with
+bad reports.
+
+`save()` now also writes the run id into `runs:index`, a sorted set scored by creation time,
+trimmed to the most recent 10,000 so it cannot grow without bound. `GET /runs` reads a
+window from that index, loads those documents in one `MGET`, and hands them to `summarise`,
+a pure function over run documents in `stats.py` that is therefore testable with neither
+Redis nor a server.
+
+The response is explicit that its totals cover the runs actually aggregated rather than all
+time, and `window.truncated` distinguishes a limit cutting the window short from the clock
+doing it. Getting that wrong would make the endpoint quietly misleading, which is worse than
+not having it.
+
 **The re-enqueue guard (`progress.py`).** Not in the original plan; it came out of a review
 of the finished system. The sweeper puts a run back on the queue whenever its worker
 disappears, which is right when the worker died for its own reasons and wrong when the run
